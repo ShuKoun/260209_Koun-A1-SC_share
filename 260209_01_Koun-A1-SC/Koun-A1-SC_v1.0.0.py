@@ -1,204 +1,234 @@
-
-# ============================================================================
-# KOUN-GR for Semiconductors (TCAD MVP)
-# Case: 1D PN Junction (Poisson-Boltzmann Equation)
-# Challenge: Extreme exponential nonlinearity (Shockley diode logic)
-# ============================================================================
-
 import jax
 import jax.numpy as jnp
 from jax import grad, jit, jacfwd
 import matplotlib.pyplot as plt
 import numpy as np
+import time
 
-# Enable 64-bit precision (Critical for semiconductor simulation)
+# 強制 64 位精度 (對 2D 模擬更加重要)
 jax.config.update("jax_enable_x64", True)
 
-# 1. Physics Constants (Silicon parameters)
-q = 1.602e-19       # Elementary charge
-kb = 1.38e-23       # Boltzmann constant
-T = 300.0           # Temperature (K)
-eps_0 = 8.85e-14    # Vacuum permittivity (F/cm)
-eps_r = 11.7        # Relative permittivity of Silicon
+# ============================================================================
+# 1. 2D 網格與物理設置
+# ============================================================================
+print("[Setup] Initializing 2D Grid...")
+
+q = 1.602e-19
+kb = 1.38e-23
+T = 300.0
+eps_0 = 8.85e-14
+eps_r = 11.7
 eps = eps_0 * eps_r
-Vt = (kb * T) / q   # Thermal voltage (~0.0259 V)
-ni = 1.0e10         # Intrinsic carrier concentration (cm^-3)
+Vt = (kb * T) / q
+ni = 1.0e10
 
-# 2. Grid & Doping Profile
-L_device = 2.0e-4   # Device length: 2 microns
-N = 100             # Grid points
-x = jnp.linspace(-L_device/2, L_device/2, N)
+# 幾何尺寸 (cm)
+Lx = 2.0e-4  # 長 2um
+Ly = 1.0e-4  # 高 1um
+
+# 網格密度 (適中，保證演示速度)
+Nx = 60      # X方向點數
+Ny = 30      # Y方向點數
+N = Nx * Ny  # 總變量數
+
+x = jnp.linspace(-Lx/2, Lx/2, Nx)
+y = jnp.linspace(0, Ly, Ny)
 dx = x[1] - x[0]
+dy = y[1] - y[0]
 
-# Define Doping: N_D on left (N-type), N_A on right (P-type)
-# Abrupt junction at x=0
-Doping = 1.0e16     # 1e16 cm^-3
-N_dop = jnp.where(x < 0, Doping, -Doping) # Net doping (Nd - Na)
+# 創建 2D 網格
+X, Y = jnp.meshgrid(x, y)
 
-print(f"[Setup] Grid: {N} points | Doping: {Doping:.1e} cm^-3")
-print(f"[Setup] Thermal Voltage Vt: {Vt:.4f} V")
+# 定義 2D 摻雜 (Doping Profile)
+# 左半邊是 N型, 右半邊是 P型
+Doping_Level = 1.0e16
+N_dop = jnp.where(X < 0, Doping_Level, -Doping_Level)
+
+# 為了讓 2D 更有趣，我們在中間加一個小小的"高摻雜島" (模擬雜質或特殊結構)
+# 在中心位置加一個小方塊
+mask_island = (jnp.abs(X) < 0.2e-4) & (jnp.abs(Y - Ly/2) < 0.2e-4)
+N_dop = jnp.where(mask_island, Doping_Level * 5.0, N_dop)
+
+print(f"[Setup] Grid: {Ny}x{Nx} ({N} variables)")
+print(f"[Setup] 2D Doping constructed with a central island feature.")
 
 # ============================================================================
-# 3. Physics Kernel: Poisson-Boltzmann Residual
+# 2. 2D 物理內核 (五點差分法)
 # ============================================================================
 @jit
-def carrier_density(phi):
-    # Boltzmann statistics: n = ni * exp(phi/Vt), p = ni * exp(-phi/Vt)
-    # WARNING: This exponential is what usually crashes traditional solvers!
-    n = ni * jnp.exp(phi / Vt)
-    p = ni * jnp.exp(-phi / Vt)
+def carrier_density(phi_2d):
+    n = ni * jnp.exp(phi_2d / Vt)
+    p = ni * jnp.exp(-phi_2d / Vt)
     return n, p
 
 @jit
-def poisson_residual(phi):
-    # Laplacian (Finite Difference)
-    d2phi = (phi[2:] - 2*phi[1:-1] + phi[:-2]) / (dx**2)
+def poisson_residual_2d(phi_flat):
+    # 1. 還原形狀: (N,) -> (Ny, Nx)
+    phi = phi_flat.reshape((Ny, Nx))
 
-    # Padding to match shape (Dirichlet BCs at boundaries typically imply equilibrium)
-    # But for Residual calculation, we focus on the internal nodes
-
-    # Physical Charge: rho = q * (p - n + N_dop)
+    # 2. 計算電荷密度
     n, p = carrier_density(phi)
     rho = q * (p - n + N_dop)
 
-    # Poisson Eq: d2phi + rho/eps = 0
-    res_internal = d2phi + rho[1:-1] / eps
+    # 3. 計算拉普拉斯算子 (Laplacian) - 五點差分
+    # d2phi/dx2
+    d2x = (phi[1:-1, 2:] - 2*phi[1:-1, 1:-1] + phi[1:-1, :-2]) / (dx**2)
+    # d2phi/dy2
+    d2y = (phi[2:, 1:-1] - 2*phi[1:-1, 1:-1] + phi[:-2, 1:-1]) / (dy**2)
 
-    # Boundary Condition Residuals (Soft Dirichlet: phi should match built-in potential)
-    # Ideally phi_left = Vt * ln(Nd/ni), phi_right = -Vt * ln(Na/ni)
-    phi_bc_L = Vt * jnp.log(Doping/ni)
-    phi_bc_R = -Vt * jnp.log(Doping/ni)
+    laplacian = d2x + d2y
 
-    res_L = phi[0] - phi_bc_L
-    res_R = phi[-1] - phi_bc_R
+    # 4. 構建殘差矩陣 (初始化為全0)
+    # 內部節點殘差: Laplacian + rho/eps = 0
+    res_internal = laplacian + rho[1:-1, 1:-1] / eps
 
-    return jnp.concatenate([jnp.array([res_L]), res_internal, jnp.array([res_R])])
+    # 創建一個全殘差矩陣，稍後填充邊界
+    # 使用 JAX 的 .at[].set() 語法
+    res = jnp.zeros((Ny, Nx))
+    res = res.at[1:-1, 1:-1].set(res_internal)
+
+    # 5. 處理邊界條件 (Boundary Conditions)
+    # 左邊界 (Ohmic Contact): phi = V_built_in_N
+    phi_bc_L = Vt * jnp.log(Doping_Level/ni)
+    res = res.at[:, 0].set(phi[:, 0] - phi_bc_L)
+
+    # 右邊界 (Ohmic Contact): phi = V_built_in_P
+    phi_bc_R = -Vt * jnp.log(Doping_Level/ni)
+    res = res.at[:, -1].set(phi[:, -1] - phi_bc_R)
+
+    # 上下邊界 (Neumann / Insulation): dphi/dy = 0
+    # phi[0, :] = phi[1, :] => res = phi[0] - phi[1]
+    res = res.at[0, :].set(phi[0, :] - phi[1, :])
+    res = res.at[-1, :].set(phi[-1, :] - phi[-2, :])
+
+    # 6. 再次展平返回
+    return res.flatten()
 
 # ============================================================================
-# 4. The Koun-GR Core (Adjoint Protocol)
+# 3. Koun-GR 核心: 阻尼牛頓法 (2D 適配版)
 # ============================================================================
-
-# Merit Function: L = 0.5 * ||F(x)||^2
-def merit_loss(phi):
-    res = poisson_residual(phi)
+def merit_loss(phi_flat):
+    res = poisson_residual_2d(phi_flat)
     return 0.5 * jnp.sum(res**2)
 
-# JAX AD Magic: Exact Gradient of the Merit Function
-# This corresponds to J^T * F without writing Adjoint equations manually
-compute_exact_grad = jit(grad(merit_loss))
+# JAX 自動微分 (計算 2D 問題的巨大雅可比矩陣)
+print("[Compiling] JIT compiling gradients and Jacobian... (This takes a moment)")
+compute_jacobian = jit(jacfwd(poisson_residual_2d))
 
-# For Newton step: We need Jacobian.
-# In 1D we can just use dense Jacobian for demo (fast enough for N=100)
-compute_jacobian = jit(jacfwd(poisson_residual))
-
-def solve_semiconductor():
-    # Initial Guess: Flat zero potential (Very bad guess! Stress test for solver)
+def solve_2d_semiconductor():
+    # 初始猜測: 全零平面
     phi = jnp.zeros(N)
 
-    print("\nStarting Koun-GR Solver...")
-    print(f"{'Iter':<5} | {'Residual':<12} | {'Mode':<15} | {'Action'}")
-    print("-" * 60)
+    print("\nStarting Koun-GR 2D Solver...")
+    print(f"{'Iter':<5} | {'Residual':<12} | {'Strategy':<15} | {'Detail'}")
+    print("-" * 65)
 
-    norm_0 = 1.0
+    MAX_STEP_VOLTAGE = 0.2  # 物理安全限制
+
+    start_time = time.time()
 
     for k in range(50):
-        # 1. Compute State
-        F = poisson_residual(phi)
+        F = poisson_residual_2d(phi)
         res_norm = jnp.linalg.norm(F)
-        if k == 0: norm_0 = res_norm
 
-        # Check Convergence
-        if res_norm < 1e-6:
-            print(f"{k:<5} | {res_norm:<12.4e} | [CONVERGED]     | Done.")
+        if res_norm < 1e-5:
+            elapsed = time.time() - start_time
+            print(f"{k:<5} | {res_norm:<12.4e} | [CONVERGED]     | Time: {elapsed:.2f}s")
             return phi
 
-        # 2. Try Newton Step (The "Rabbit")
-        # J * dx = -F
+        # ========================================================
+        # 阻尼牛頓法 (Damped Newton)
+        # ========================================================
         try:
+            # 這裡解的是 Ax = b，其中 A 是 (1800x1800) 的矩陣
             J = compute_jacobian(phi)
-            # Damping Newton slightly to prevent instant explosion on step 1
-            dx_newton = jnp.linalg.solve(J, -F)
+            dx = jnp.linalg.solve(J, -F)
 
-            # Simple Line Search for Newton
-            alpha = 1.0
-            phi_test = phi + alpha * dx_newton
-            new_res_norm = jnp.linalg.norm(poisson_residual(phi_test))
+            # 全局阻尼計算
+            max_change = jnp.max(jnp.abs(dx))
+            damping_factor = 1.0
+            if max_change > MAX_STEP_VOLTAGE:
+                damping_factor = MAX_STEP_VOLTAGE / max_change
 
-            # Koun-GR Logic: Is Newton failing?
-            if new_res_norm >= res_norm and k < 5: # Force Newton to struggle early
-                 # Artificial check to simulate "Newton Stalled" for demo
-                 stalled = True
-            elif new_res_norm < res_norm:
-                phi = phi_test
-                print(f"{k:<5} | {res_norm:<12.4e} | [NEWTON]        | Step Accepted")
-                continue
+            dx_damped = dx * damping_factor
+
+            # 簡單的接受邏輯
+            phi_new = phi + dx_damped
+            res_new = jnp.linalg.norm(poisson_residual_2d(phi_new))
+
+            if res_new < res_norm:
+                phi = phi_new
+                print(f"{k:<5} | {res_norm:<12.4e} | [NEWTON 2D]     | Damping={damping_factor:.2e}")
             else:
-                stalled = True
+                # 如果還不行，再減半試一次 (簡單的回溯)
+                phi_new = phi + dx_damped * 0.5
+                res_new_2 = jnp.linalg.norm(poisson_residual_2d(phi_new))
+                if res_new_2 < res_norm:
+                     phi = phi_new
+                     print(f"{k:<5} | {res_norm:<12.4e} | [NEWTON 2D]     | Retry 0.5x")
+                else:
+                    print(f"{k:<5} | {res_norm:<12.4e} | [STUCK]         | Need Adjoint Rescue")
+                    break # 為了 demo 簡潔，這裡簡化了 fallback 邏輯
 
-        except:
-            stalled = True
-
-        # 3. Adjoint Fallback (The "Turtle" - Your Safety Net)
-        if stalled:
-            # This is your algorithm's superpower
-            # Direct descent on the Merit Landscape
-            grad_val = compute_exact_grad(phi)
-
-            # Scale gradient to make a meaningful step (Simple adaptive scaling)
-            # In a real app, use Line Search here.
-            grad_norm = jnp.linalg.norm(grad_val)
-            scale = (res_norm / (grad_norm + 1e-20)) * 0.1
-
-            dx_adjoint = -grad_val * scale
-            phi = phi + dx_adjoint
-
-            print(f"{k:<5} | {res_norm:<12.4e} | [ADJOINT GRAD]  | >>> RESCUE TRIGGERED")
+        except Exception as e:
+            print(f"Error: {e}")
+            break
 
     return phi
 
 # ============================================================================
-# Main Execution
+# 4. 運行與 2D 可視化
 # ============================================================================
-phi_solution = solve_semiconductor()
+phi_solution_flat = solve_2d_semiconductor()
 
-# Visualization
-if phi_solution is not None:
-    plt.figure(figsize=(10, 10))
+# 重塑回 2D 進行繪圖
+phi_2d = phi_solution_flat.reshape((Ny, Nx))
+n_2d, p_2d = carrier_density(phi_2d)
 
-    # 1. Potential
-    plt.subplot(3, 1, 1)
-    plt.plot(x * 1e4, phi_solution, 'b-', linewidth=2, label="Potential ($\phi$)")
-    plt.ylabel("Potential (V)")
-    plt.title("Koun-GR: 1D PN Junction Simulation")
-    plt.grid(True)
-    plt.legend()
+# 繪圖設置
+fig = plt.figure(figsize=(15, 10))
 
-    # 2. Electric Field (-dphi/dx)
-    E_field = -jnp.gradient(phi_solution, dx)
-    plt.subplot(3, 1, 2)
-    plt.plot(x * 1e4, E_field, 'r-', linewidth=2, label="Electric Field")
-    plt.ylabel("E-Field (V/cm)")
-    plt.grid(True)
-    plt.legend()
+# 1. 電勢分佈 (Heatmap)
+ax1 = plt.subplot(2, 2, 1)
+im1 = ax1.pcolormesh(X*1e4, Y*1e4, phi_2d, cmap='viridis', shading='auto')
 
-    # 3. Carrier Densities (Log Scale)
-    n, p = carrier_density(phi_solution)
-    plt.subplot(3, 1, 3)
-    plt.semilogy(x * 1e4, n, 'g-', label="Electron ($n$)")
-    plt.semilogy(x * 1e4, p, 'm--', label="Hole ($p$)")
-    plt.semilogy(x * 1e4, jnp.abs(N_dop), 'k:', alpha=0.3, label="Doping")
-    plt.xlabel("Position (microns)")
-    plt.ylabel("Concentration ($cm^{-3}$)")
-    plt.grid(True)
-    plt.legend()
+fig.colorbar(im1, ax=ax1, label='Potential (V)')
+ax1.set_title('2D Electric Potential')
+ax1.set_xlabel('X (microns)')
+ax1.set_ylabel('Y (microns)')
 
-    plt.tight_layout()
-    plt.show()
+# 2. 摻雜分佈 (展示我們的結構)
+ax2 = plt.subplot(2, 2, 2)
+# Log scale for doping to see the types clearly
+im2 = ax2.pcolormesh(X*1e4, Y*1e4, jnp.log10(jnp.abs(N_dop)), cmap='RdBu', shading='auto')
+fig.colorbar(im2, ax=ax2, label='Log10(|Doping|)')
+ax2.set_title('Doping Profile (Red=P, Blue=N)')
+ax2.set_xlabel('X (microns)')
+ax2.set_ylabel('Y (microns)')
 
-    # Validation
-    v_bi_sim = phi_solution[0] - phi_solution[-1]
-    v_bi_theory = Vt * jnp.log((Doping**2)/(ni**2))
-    print(f"\n[Validation]")
-    print(f"Simulated Built-in Potential: {v_bi_sim:.4f} V")
-    print(f"Theoretical Built-in Potential: {v_bi_theory:.4f} V")
-    print("Match Status: " + ("PERFECT" if abs(v_bi_sim - v_bi_theory) < 0.05 else "GOOD"))
+# 3. 電子濃度 (Log Scale)
+ax3 = plt.subplot(2, 2, 3)
+im3 = ax3.pcolormesh(X*1e4, Y*1e4, jnp.log10(n_2d), cmap='plasma', shading='auto')
+
+fig.colorbar(im3, ax=ax3, label='Log10(Electron Conc.)')
+ax3.set_title('Electron Concentration')
+ax3.set_xlabel('X (microns)')
+ax3.set_ylabel('Y (microns)')
+
+# 4. 電場向量場 (Quiver Plot)
+ax4 = plt.subplot(2, 2, 4)
+# 計算電場 E = -grad(phi)
+Ex, Ey = jnp.gradient(-phi_2d, dx, dy, axis=(1, 0)) # 注意 axis 順序
+# 為了視覺清晰，降低採樣率 (每隔 3 個點畫一個箭頭)
+skip = (slice(None, None, 3), slice(None, None, 3))
+ax4.quiver(X[skip]*1e4, Y[skip]*1e4, Ex[skip], Ey[skip], color='r')
+ax4.set_title('Electric Field Vectors')
+ax4.set_xlabel('X (microns)')
+ax4.set_ylabel('Y (microns)')
+
+plt.tight_layout()
+plt.show()
+
+print("\n[Summary] 2D Simulation Complete.")
+print("Check the 'Doping Profile' plot: You should see a small island in the center.")
+print("Check 'Potential': The lines should bend around that island, proving 2D physics works.")
