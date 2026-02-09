@@ -1,0 +1,26 @@
+ [Setup] Initializing 2D Grid...
+[Setup] Grid: 30x60 (1800 variables)
+[Setup] 2D Doping constructed with a central island feature.
+[Compiling] JIT compiling gradients and Jacobian... (This takes a moment)
+
+Starting Koun-GR 2D Solver...
+Iter  | Residual     | Strategy        | Detail
+-----------------------------------------------------------------
+0     | 1.1027e+11   | [NEWTON 2D]     | Damping=2.75e-02
+1     | 1.0721e+11   | [NEWTON 2D]     | Damping=3.20e-02
+2     | 8.0712e+10   | [NEWTON 2D]     | Damping=1.18e-01
+3     | 7.0293e+10   | [NEWTON 2D]     | Damping=1.32e-01
+4     | 5.8449e+10   | [NEWTON 2D]     | Retry 0.5x
+5     | 3.3716e+10   | [NEWTON 2D]     | Retry 0.5x
+6     | 1.5211e+10   | [NEWTON 2D]     | Damping=1.00e+00
+7     | 1.1242e+10   | [NEWTON 2D]     | Damping=1.00e+00
+8     | 7.1648e+08   | [NEWTON 2D]     | Damping=1.00e+00
+9     | 3.7260e+06   | [NEWTON 2D]     | Damping=1.00e+00
+10    | 1.1891e+02   | [NEWTON 2D]     | Damping=1.00e+00
+11    | 2.9018e-04   | [NEWTON 2D]     | Damping=1.00e+00
+12    | 2.8903e-04   | [NEWTON 2D]     | Damping=1.00e+00
+13    | 2.8389e-04   | [STUCK]         | Need Adjoint Rescue
+
+[Summary] 2D Simulation Complete.
+Check the 'Doping Profile' plot: You should see a small island in the center.
+Check 'Potential': The lines should bend around that island, proving 2D physics works.
