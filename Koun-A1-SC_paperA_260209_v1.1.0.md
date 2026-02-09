@@ -59,67 +59,140 @@ Koun-A1-SC 并非试图发明一种新的数值求解方法，而是将求解过
 ---
 
 
-## ---
 
-**2\. 治理架構實例化 (Instantiating the Framework)**
 
-Koun-A1-SC 並非單一的數值方法，而是一套動態切換求解策略的決策邏輯。其架構由以下三個核心層次構成：
 
-### **2.1 生存層：偽瞬態延拓 (The Survival Base: PTC)**
 
-面對極端非線性，標準牛頓法試圖一步到位的策略往往導致「過衝（Overshoot）」和物理量溢出。我們引入偽瞬態延拓（Pseudo-Transient Continuation, PTC），將穩態問題轉化為偽時間演化問題：
+---
 
-$$\\left( \\frac{1}{\\Delta \\tau} I \- J(\\phi\_k) \\right) \\delta \\phi \= F(\\phi\_k)$$  
-其中 $\\Delta \\tau$ 是偽時間步長。
+## **2. 治理架構實例化（Instantiating the Framework）——安全版替換稿**
 
-* **生存模式 ($\\Delta \\tau \\to 0$)：** 算子趨近於對角矩陣 $\\frac{1}{\\Delta \\tau} I$，問題退化為穩健的梯度流，保證了算法在遠離解區域時的存活能力。  
-* **牛頓模式 ($\\Delta \\tau \\to \\infty$)：** 算子回歸為 $-J$，恢復牛頓法的二次收斂速度。
+Koun-A1-SC 不是單一數值技巧，而是一套以「事件—決策」驅動的治理協議：在每一步迭代中，求解器不僅計算候選更新方向，也同時評估其可接受性與系統所處狀態，並依此調節全局化控制變量（如偽時間步長 $dt$）或觸發救援路徑。
 
-**治理原則：** $\\Delta \\tau$ 是系統的最高權威。當結構性診斷顯示系統健康時，$\\Delta \\tau$ 指數增長；當檢測到危機時，$\\Delta \\tau$ 立即縮減以增強正則化。
+為了在高度剛性的 Poisson–Boltzmann 半導體系統上實作此治理思想，我們將協議設計拆成三個互相解耦但順序明確的層次：生存層、事件層、救援層。
 
-### **2.2 結構哨兵：噪聲與一致性 (Structural Sentinel: Noise & Coherence)**
+### **2.1 生存層：偽瞬態延拓（The Survival Base: PTC）**
 
-在高剛性系統的殘差末端（Residual Floor），數值噪聲往往會導致目標函數（Merit Function）出現微小波動。傳統算法常將此誤判為發散。
+在高度剛性的非線性系統中，直接求解 $F(\phi)=0$ 的 Newton 步，往往因局部线性化不再代表全局几何而失败。为此我们引入偽瞬態延拓（PTC），将稳态根求解过程嵌入一个“伪时间演化”结构，使得远离解区时优先保证生存性。
 
-v1.3.6 協議引入了 **「雙重容忍（Dual Tolerance）」** 與 **「一致性分類」**：
+在每一轮迭代 $k$，我们考虑线性子问题的 shifted 形式：
 
-* **接受準則：** $\\Phi\_{new} \\le \\Phi\_{old} \\cdot (1 \+ \\text{rtol}) \+ \\text{atol}$。允許能量在噪聲範圍內（由 $\\text{atol}$ 定義）微幅上升。  
-* **事件分類：**  
-  * **\[STEP\]**：顯著下降。  
-  * **\[NOISE\]**：波動在 $\\text{atol}$ 範圍內。系統判定為「健康」，允許 $dt$ 繼續增長。  
-  * **\[UPHILL\]**：顯著上升（超過 $\\text{atol}$）。觸發救援。
+$$
+\left(\frac{1}{dt_k}I - J(\phi_k)\right),\delta\phi_k = F(\phi_k),
+$$
 
-### **2.3 救援家族：多尺度狙擊 (The Rescue Family: Multi-Scale Sniper)**
+其中 $J(\phi_k)=\frac{\partial F}{\partial \phi}\big|_{\phi_k}$，$dt_k$ 为伪时间步长（治理变量）。
 
-當牛頓方向失效（\[UPHILL\]）時，協議切換至伴隨救援模式（Adjoint Rescue）。
+* 当 $dt_k \to 0$ 时，算子趋近 $\frac{1}{dt_k}I$ 主导，对应更新近似 $\delta\phi_k \approx dt_k,F(\phi_k)$，提供稳定的“生存推进”。
+* 当 $dt_k \to \infty$ 时，算子趋近 $-J(\phi_k)$，回到 Newton 型加速行为。
 
-鑑於高解析度下的地形複雜性，單一尺度的梯度下降往往無效。我們實施 **多尺度狙擊（Multi-Scale Sniper）**：
+**治理原则：** 在 Koun-A1-SC 中，$dt$ 被视为唯一的全局化权威（single authority）。当系统表现为可接受推进时，$dt$ 允许增长；当出现不可接受的上升或拒绝事件时，$dt$ 才收缩以增强正则化。此设计避免了同时由多个全局化机制（如 $dt$、$\alpha$、以及额外 clamp）互相否决而引发的内耗。
 
-$$d\_{rescue} \= \- \\nabla \\Phi \\cdot \\frac{||F||}{||\\nabla \\Phi||} \\cdot \\lambda, \\quad \\lambda \\in \\{0.1, 0.05, 0.01, \\dots\\}$$  
-求解器盲測一組尺度，一旦發現能量下降的通道，即刻切換路徑。
+### **2.2 事件层：一致性分类与双重容忍（Structural Sentinel: Coherent Noise Classification）**
 
-## ---
+在残差进入平台区（residual plateau）时，严格下降判据往往会把数值噪声或离散误差主导下的微小波动误判为“失效”，从而触发不必要的救援与步长崩溃。为避免这类假性失败（false failure），Koun-A1-SC 引入一致性事件分类与双重容忍（dual tolerance）。
 
-**3\. 關鍵技術實現 (Key Technical Implementations)**
+我们以二次型 merit 函数作为统一的评估基准：
 
-為了支撐上述治理邏輯在高解析度（$120 \\times 60$ 網格，7200 自由度）下的運行，必須解決計算複雜度與拓撲死鎖問題。
+$$
+\Phi(\phi) = \frac12 |F(\phi)|^2.
+$$
 
-### **3.1 無矩陣 Krylov 求解 (Matrix-Free Krylov Solver)**
+对候选步 $\phi_{k}^{\text{trial}}=\phi_k+\alpha,\delta\phi_k$（$\alpha$ 为内部线搜索变量，但在协议上不是主权变量），我们采用带容忍的接受条件：
 
-直接構建 $7200 \\times 7200$ 的稠密雅可比矩陣是不切實際的。我們採用 **Matrix-Free GMRES**，利用自動微分（Automatic Differentiation）計算雅可比-向量積（JVP）：
+$$
+\Phi(\phi_{k}^{\text{trial}})\le \Phi(\phi_k) + \text{atol},
+$$
 
-$$J(\\phi) \\cdot v \\approx \\frac{\\partial F(\\phi \+ \\epsilon v)}{\\partial \\epsilon} \\bigg|\_{\\epsilon=0}$$  
-這使得內存消耗從 $O(N^2)$ 降至 $O(N)$。
+其中 $\text{atol}$ 表示噪声/平台尺度下允许的能量波动上界。该规则的目的不是追求“允许变差”，而是避免将不可避免的微小数值波动误判为危机。
 
-### **3.2 拓撲修正：邊界消元 (Boundary Elimination)**
+在实现上，Koun-A1-SC 将每一步归类为：
 
-在 v1.3.1 的實驗中，我們觀測到了 **「邊界死鎖（Boundary Deadlock）」** 現象：在強 PTC 正則化下（$\\frac{1}{dt}$ 極大），Krylov 子空間無法有效捕捉 Dirichlet 邊界的硬約束，導致邊界殘差鎖死。
+* **[STEP]**：候选步被接受且表现为有效下降（$ \Phi(\phi_{k}^{\text{trial}}) < \Phi(\phi_k)$）。
+* **[NOISE]**：候选步被接受但变化落在容忍区间内（$0 \le \Phi(\phi_{k}^{\text{trial}})-\Phi(\phi_k)\le \text{atol}$）。
+* **[UPHILL]/[REJECT]**：候选步不满足可接受条件，或线搜索未能找到满足容忍条件的候选。
 
-v1.3.2 引入了拓撲修正：將邊界節點從線性系統中 **完全消元（Eliminated）**。
+**关键约束（防内耗）：** 一旦线搜索在容忍准则下接受了一个候选步，则治理层必须一致地将其作为可通过事件处理（通常是 [STEP] 或 [NOISE]），而不能同时把该步标记为失败并触发惩罚机制。这一点是协议从 v1.3.4/v1.3.5 走向 v1.3.6 的关键修复点。
 
-* 線性系統僅求解內部節點（Internal Nodes）。  
-* 邊界條件被「硬編碼」進殘差函數的算子中，不再作為變量參與迭代。  
-  這一修正從根本上消除了邊界殘差滯留的可能性。
+### **2.3 救援层：多尺度狙击（The Rescue Family: Multi-Scale Sniper）**
+
+当出现真实的不可接受事件（如 [UPHILL] 或 [REJECT]），协议才允许进入救援家族。救援不被视为主收敛机制，而是治理框架下的授权介入者，用于在局部结构性断裂或线性候选方向不可用时维持系统可演化性。
+
+以 $\Phi(\phi)$ 为目标，梯度为：
+
+$$
+\nabla \Phi(\phi) = J(\phi)^{\mathsf T}F(\phi).
+$$
+
+我们采用基于梯度的救援方向，并进行尺度归一化（与残差量级对齐）：
+
+$$
+d_{\text{rescue}} = -,\nabla \Phi(\phi)\cdot \frac{|F(\phi)|}{|\nabla\Phi(\phi)|+\epsilon}\cdot \lambda,
+$$
+
+其中 $\lambda$ 属于一组离散尺度集合（多尺度搜索），例如 $\lambda \in {0.1,0.05,0.01,0.005,0.001}$。多尺度的目的在于避免单一尺度在高刚性地形上变成“盲射”：只有当某一尺度满足容忍接受条件时，救援才被视为命中（HIT）。
+
+---
+
+## **3. 關鍵技術實現（Key Technical Implementations）**
+
+本节仅描述支撑上述治理逻辑的关键技术结构，并避免对未实现机制做过度承诺。
+
+### **3.1 無矩陣 Krylov：Matrix-Free GMRES with JVP**
+
+在 $120\times 60$ 网格下，未知量数量为 $N=7200$（在边界消元后为内部自由度 $N_{\text{in}}=(N_x-2)(N_y-2)=6844$）。显式构建稠密 Jacobian 代价为 $O(N^2)$ 存储与 $O(N^3)$ 求解，因而在高解析度下不可取。
+
+Koun-A1-SC 采用无矩阵（matrix-free）方式实现 Krylov 求解：通过自动微分计算雅可比–向量积（JVP）来定义线性算子对任意向量 $v$ 的作用：
+
+$$
+J(\phi),v ;=;\left.\frac{d}{d\epsilon}F(\phi+\epsilon v)\right|_{\epsilon=0}.
+$$
+
+在 PTC shifted 系统中，线性算子为：
+
+$$
+A(\phi;dt),v = \frac{1}{dt}v - J(\phi),v.
+$$
+
+因此 GMRES 仅需反复调用 $A(\cdot)$ 的 matvec，即可构造 Krylov 子空间并得到近似解。
+
+### **3.2 拓撲修正：邊界消元（Boundary Elimination）**
+
+在早期实验中，我们观察到边界残差可能在某些组合配置下出现冻结现象（boundary deadlock）：即便内部残差下降，边界相关误差却长期停滞，从而导致整体演化进入非物理的锁死状态。
+
+为避免 Krylov 在强边界约束下对边界子系统失明，Koun-A1-SC 采用边界消元：将边界节点从未知量中剔除，仅对内部节点求解。边界条件不再作为“需要被迭代修正的变量”，而是作为固定参数直接写入残差算子的 stencil。
+
+形式上，令 $\phi_{\text{in}}$ 为内部未知量，$\phi$ 为重建后的全场，则残差函数被重写为仅作用在内部节点上：
+
+$$
+F_{\text{in}}(\phi_{\text{in}}) = 0,
+$$
+
+并通过重建映射 $\phi = \mathcal{R}(\phi_{\text{in}})$ 将边界值注入 stencil 计算。该修正确保边界误差在定义上不再成为 Krylov 的自由度来源，从而避免边界死锁现象。
+
+### **3.3 對角預處理：Jacobi / Diagonal Scaling**
+
+为提升 GMRES 在高刚性系统中的可解性，我们采用简单的对角预处理（Jacobi/diagonal scaling）。以 $A(\phi;dt)$ 为目标算子，其对角近似可由离散拉普拉斯主对角项与载流子源项的局部导数构成。对内部点的近似对角可写为：
+
+$$
+\operatorname{diag}(J)\approx -\frac{2}{dx^2}-\frac{2}{dy^2}-\frac{q}{\epsilon V_T},(n+p),
+$$
+
+从而：
+
+$$
+\operatorname{diag}(A)\approx \frac{1}{dt} - \operatorname{diag}(J).
+$$
+
+预处理以逐点缩放的方式作用于 GMRES 的线性系统与残差评估，使线性子问题更稳定地提供可用候选方向。
+
+---
+
+
+
+
+
+
 
 ## ---
 
