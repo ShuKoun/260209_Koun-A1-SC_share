@@ -1,22 +1,33 @@
-這是一份依照學術規格撰寫的 **Paper A (Methodology & Protocol)** 初稿。
 
-這篇文章將 **Koun-A1-SC** 定義為一個「治理協議的實例」，而非單純的數值求解器。它強調的是如何通過結構化的決策邏輯，解決了傳統方法在極端剛性問題上必須依賴人工輔助（Ramping）的痛點。
 
-# ---
+### **Koun-A1-SC：極端剛性半導體 Poisson–Boltzmann 系統冷啟動的結構型算法治理協議**
 
-**Paper A: 方法論與協議設計**
+**（英文副標題）**
+**Koun-A1-SC: A Structural Algorithmic Governance Protocol for Cold-Start Simulation of Extremely Stiff Semiconductor Poisson–Boltzmann Systems**
 
-**標題：**
 
-**Koun-A1-SC：極端剛性漂移-擴散系統冷啟動的結構型算法治理協議**
 
-*(Koun-A1-SC: A Structural Algorithmic Governance Protocol for Cold-Start Simulation of Extremely Stiff Drift-Diffusion Systems)*
+---
 
-## ---
 
-**摘要 (Abstract)**
 
-半導體器件仿真中的漂移-擴散模型（Drift-Diffusion Model）因載流子濃度與電勢的指數耦合關係，表現出極端的剛性（Stiffness）。傳統牛頓類方法（Newton-Raphson）在缺乏良好初值的情況下極易發散，實務上常需依賴人工設計的偏壓或摻雜漸進策略（Ramping）。本文提出 **Koun-A1-SC**，這是 Koun-A1 算法治理框架在半導體領域的具體實例化。該協議通過引入 **偽瞬態延拓（PTC）** 作為單一權威生存底座，結合 **邊界消元（Boundary Elimination）** 的拓撲修正，以及基於 **雙重容忍（Dual Tolerance）** 的一致性事件分類機制，成功實現了高解析度（$120 \\times 60$ 網格）、極端摻雜突變條件下的「冷啟動」求解。實驗顯示，該協議不僅能消除傳統算法的假性崩潰（False Failure），還能在抵達離散化誤差地板時自動切換至「受控漂移（Controlled Drift）」狀態，展現了治理框架在結構性斷裂邊緣的魯棒性。
+### **摘要（Abstract）**
+
+半導體器件模擬中的 Poisson–Boltzmann 類平衡模型，由於載流子濃度與電勢之間的指數耦合關係，呈現出極端的數值剛性（stiffness）。在缺乏良好初值的情況下，傳統牛頓類方法（Newton–Raphson）往往因過衝或數值溢出而失效，實務中通常依賴人工設計的偏壓或摻雜漸進策略（ramping）來維持收斂。
+
+本文提出 **Koun-A1-SC**，作為 **Koun-A1 算法治理框架** 在半導體 Poisson–Boltzmann 系統中的一個具體實例。與將可解性視為數值技巧的傳統觀點不同，Koun-A1-SC 將求解過程建模為一個具備結構化決策邏輯的治理協議。該協議以 **偽瞬態延拓（Pseudo-Transient Continuation, PTC）** 作為單一權威的生存底座，通過動態調節偽時間步長來在「穩定生存」與「牛頓加速」之間連續切換；同時結合 **邊界消元（Boundary Elimination）** 以解除 Krylov 子空間方法在強剛性 Dirichlet 邊界下的拓撲凍結問題。
+
+在此基礎上，我們引入了一套 **一致性的事件分類與雙重容忍（dual tolerance）準則**，用以區分真實發散、数值噪聲主導的殘差平台，以及健康但缓慢的演化阶段。這一機制避免了傳統严格下降判據在殘差地板附近所导致的假性失效（false failure），使求解器能够在高解析度（$120 \times 60$ 网格）和极端摻杂突变条件下，从零初值冷启动并保持稳定、可解释的演化行为。
+
+数值实验表明，Koun-A1-SC 并不试图在离散化误差主导的残差平台上强行追求进一步下降，而是能够识别并进入一种 **受控漂移（controlled drift）** 状态：系统在维持稳定性的同时，以可控方式遍历解空间的平坦区域，而不会触发非必要的步长崩溃或错误中止。
+
+这些结果表明，将 **算法治理（algorithmic governance）** 作为一等设计目标，而非事后补救策略，是处理极端刚性半导体平衡问题的一条有效路径。
+
+---
+
+
+
+
 
 ## ---
 
