@@ -1,15 +1,34 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6 (緩存鎖定終極版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6 (Final Cache Lock)
-版本號 (Version): Harness v1.4.6
-前置版本 (Prev Version): Harness v1.4.5 / Core v1.7.12
+文件名 (Filename): BenchS_StressHarness_v1.4.6-001-Hardened.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-001 (環境硬化版)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-001 (Environment Hardened)
+版本號 (Version): Harness v1.4.6-001-Hardened
+前置版本 (Prev Version): Harness v1.4.6-001
 
 變更日誌 (Changelog):
-    1. [Ops] 緩存鎖定：永久移除 main 循環末尾的 jax.clear_caches()，修正 v1.4.5 的緩存自殺回歸，確保 Warmup 編譯成果在全測試週期內有效。
-    2. [Invariant] 黃金標準：保留 v1.4.5 的所有高級特性 (Bias-Triggered Probe, Norm-Controlled RHS, K-Space Schedule, Taxonomy)。
-    3. [Meta] 封版：此版本為最終數據採集版本，不再接受任何非崩潰級別的修改。
+    1. [Env] 硬性禁用：直接覆寫 XLA_FLAGS 為 --xla_gpu_enable_command_buffer= (無拼接)，確保 CUDA Graph 徹底關閉。
+    2. [Env] 生存模式：將 XLA_PYTHON_CLIENT_MEM_FRACTION 壓降至 .35，為 CUDA Driver 預留 65% 顯存空間以避免 OOM。
+    3. [Ops] 狀態確認：啟動時打印環境變量以供審計。
+    4. [Invariant] 核心鎖定：預算 (5.0s)、預熱邏輯、算法內核與 v1.4.6-001 完全一致。
 """
+
+import os
+import sys
+
+# [Env Adaptation] HARDENED GPU SETTINGS
+# 1. Force disable CUDA Graph (Command Buffer) - OVERWRITE, do not append
+os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer="
+
+# 2. Disable preallocation
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+# 3. Survival Mode: Limit JAX to 35% GPU memory to leave massive headroom for Driver/Compilation
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".35"
+
+print(f"--- Environment Hardening Applied ---")
+print(f"XLA_FLAGS: {os.environ.get('XLA_FLAGS')}")
+print(f"MEM_FRACTION: {os.environ.get('XLA_PYTHON_CLIENT_MEM_FRACTION')}")
+print(f"-------------------------------------")
 
 import jax
 import jax.numpy as jnp
@@ -19,11 +38,17 @@ import numpy as np
 import time
 from functools import partial
 import pandas as pd
-import sys
 import gc
 
 # 強制 64 位精度
 jax.config.update("jax_enable_x64", True)
+
+# [Ops] Device Check
+print(f"[{time.strftime('%H:%M:%S')}] JAX Device Check: {jax.devices()}")
+if 'cpu' in str(jax.devices()[0]).lower():
+    print("⚠️ WARNING: JAX is running on CPU! Performance will be degraded.")
+else:
+    print("✅ SUCCESS: JAX is running on GPU.")
 
 # ============================================================================
 # 0. Configuration & Stress Parameters
@@ -53,8 +78,8 @@ SCAN_PARAMS = [
 ]
 
 # [Ops] Adaptive Budgeting
-MAX_STEP_TIME_FIRST = 60.0  # Cold start allowance
-MAX_STEP_TIME_NORMAL = 30.0 # Fast fail for continuation
+MAX_STEP_TIME_FIRST = 60.0  # Cold start allowance (keep high)
+MAX_STEP_TIME_NORMAL = 5.0  # [Config v1.4.6-001] Tight budget (5s)
 
 # [Algo] Coarse-to-Fine Constants
 COARSE_STRIDE = 5 # Jump 5 grid points at a time
@@ -357,7 +382,20 @@ def setup_grid(nx, ny):
     X, Y = jnp.meshgrid(x, y)
     return X, Y, dx, dy
 
-# [Ops v1.4.6] Cache-Safe Probe: Bias-Triggered + Norm-Controlled
+# [Ops v1.4.6-001] Safe Warmup with Try-Except
+def safe_run_gmres(name, func, *args, **kwargs):
+    """
+    Helper to run GMRES with try-except block.
+    This prevents cuSolver/XLA internal errors from killing the entire script during warmup.
+    """
+    try:
+        x, _ = func(*args, **kwargs)
+        x.block_until_ready()
+        return True
+    except Exception as e:
+        print(f"    [Warmup Warning] {name} skipped due to backend error: {e}")
+        return False
+
 def warmup_kernels():
     print("\n>>> JIT WARMUP: Compiling Isomorphic Operators for all Grids & Cases...")
     dt_inv = 1.0 / 1e-4
@@ -422,38 +460,37 @@ def warmup_kernels():
                 target_norm = 1e-3
                 rhs_probe = res * (target_norm / res_norm)
                 
-                # Baseline GMRES
+                # Baseline GMRES (Safe Wrap)
                 A_op_base = partial(matvec_op_baseline, phi_in=phi_init, bias_L=bias_L, bias_R=bias_R, 
                                     eps_map=eps_map, N_dop=N_dop, ni_map=ni_map, Q_trap_map=Q_trap_map, 
                                     dx=dx, dy=dy, nx=nx_i, ny=ny_i)
                 g_base = BASELINE_PARAMS
-                x_b, _ = gmres(A_op_base, -rhs_probe, tol=g_base['gmres_tol'], maxiter=g_base['gmres_maxiter'], restart=g_base['gmres_restart']) 
-                x_b.block_until_ready()
+                safe_run_gmres("Baseline", gmres, A_op_base, -rhs_probe, tol=g_base['gmres_tol'], maxiter=g_base['gmres_maxiter'], restart=g_base['gmres_restart'])
                 
-                # A1 Standard GMRES
+                # A1 Standard GMRES (Safe Wrap)
                 A_op_a1 = partial(matvec_op_a1, phi_in=phi_init, dt_inv=dt_inv, M_inv=M_inv, bias_L=bias_L, bias_R=bias_R, 
                                   eps_map=eps_map, N_dop=N_dop, ni_map=ni_map, Q_trap_map=Q_trap_map, 
                                   dx=dx, dy=dy, nx=nx_i, ny=ny_i)
                 g_a1 = A1_PARAMS
                 rhs_probe_a1 = M_inv * rhs_probe
-                x_a1, _ = gmres(A_op_a1, rhs_probe_a1, tol=g_a1['gmres_tol'], maxiter=g_a1['gmres_maxiter'], restart=g_a1['gmres_restart']) 
-                x_a1.block_until_ready()
+                safe_run_gmres("A1-Std", gmres, A_op_a1, rhs_probe_a1, tol=g_a1['gmres_tol'], maxiter=g_a1['gmres_maxiter'], restart=g_a1['gmres_restart'])
                 
-                # A1 Hard GMRES
-                x_h, _ = gmres(A_op_a1, rhs_probe_a1, tol=1e-2, maxiter=80, restart=20) 
-                x_h.block_until_ready()
+                # A1 Hard GMRES (Safe Wrap)
+                safe_run_gmres("A1-Hard", gmres, A_op_a1, rhs_probe_a1, tol=1e-2, maxiter=80, restart=20)
                 
                 # [v1.4.5] Bias-Triggered Hard Branch
                 res_norm_val = float(jnp.linalg.norm(res))
                 bias_R_probe = bias_R
-                
                 if res_norm_val <= 15.0: 
-                    # Force Hard Relay Branch via Extreme Boundary Condition
                     bias_R_probe = phi_bc_R_base + params['BiasMax'] + 1.0
                 
                 physics_args = (eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
                 dummy_solver = KounA1Solver(A1_PARAMS)
-                dummy_solver.solve_step(phi_init, bias_L, bias_R_probe, 1e-4, physics_args, is_relay_hard=True, step_time_limit=0.5)
+                # Try-except for solver step too
+                try:
+                    dummy_solver.solve_step(phi_init, bias_L, bias_R_probe, 1e-4, physics_args, is_relay_hard=True, step_time_limit=0.5)
+                except Exception as e:
+                    print(f"    [Warmup Warning] Solver-Branch skipped: {e}")
             
             print(f" Done ({time.time()-start_case:.2f}s)")
     print(">>> JIT WARMUP COMPLETE.\n")
@@ -639,7 +676,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6 (FINAL CACHE LOCK) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-001 (BUDGET CONSTRAINT) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -731,10 +768,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-001_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-001_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6_FullLog.csv, Stress_v1.4.6_Summary.csv")
+    print("Saved: Stress_v1.4.6-001_FullLog.csv, Stress_v1.4.6-001_Summary.csv")
 
 if __name__ == "__main__":
     main()
