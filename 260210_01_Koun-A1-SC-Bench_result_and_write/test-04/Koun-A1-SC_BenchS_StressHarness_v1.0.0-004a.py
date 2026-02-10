@@ -1,15 +1,29 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6 (緩存鎖定終極版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6 (Final Cache Lock)
-版本號 (Version): Harness v1.4.6
-前置版本 (Prev Version): Harness v1.4.5 / Core v1.7.12
+文件名 (Filename): BenchS_StressHarness_v1.4.6-004a.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-004a (審計級最終版)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-004a (Audit-Grade Final)
+版本號 (Version): Harness v1.4.6-004a
+前置版本 (Prev Version): Harness v1.4.6-004
 
 變更日誌 (Changelog):
-    1. [Ops] 緩存鎖定：永久移除 main 循環末尾的 jax.clear_caches()，修正 v1.4.5 的緩存自殺回歸，確保 Warmup 編譯成果在全測試週期內有效。
-    2. [Invariant] 黃金標準：保留 v1.4.5 的所有高級特性 (Bias-Triggered Probe, Norm-Controlled RHS, K-Space Schedule, Taxonomy)。
-    3. [Meta] 封版：此版本為最終數據採集版本，不再接受任何非崩潰級別的修改。
+    1. [Strategy] 保守接力：Early Relay 的 snapping 改為 floor()，確保 A1 起跑點 ≤ Baseline 成功點，消除「偷跑」嫌疑。
+    2. [Algo] 徹底去特權：移除 run_sweep_stress 中殘餘的 is_relay_hard 參數與 iters==0 邏輯，確保算法純淨。
+    3. [Data] 語義增強：在 A1 的日誌中透傳 Baseline 的失效信息 (last_success_bias, fail_reason, fail_class)，便於因果分析。
+    4. [Invariant] 環境繼承：保留 v1.4.6 的 GPU 防禦與緩存鎖定。
 """
+
+import os
+import sys
+
+# [Env Adaptation] HARDENED GPU SETTINGS
+os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer="
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".35"
+
+print(f"--- Environment Hardening Applied ---")
+print(f"XLA_FLAGS: {os.environ.get('XLA_FLAGS')}")
+print(f"MEM_FRACTION: {os.environ.get('XLA_PYTHON_CLIENT_MEM_FRACTION')}")
+print(f"-------------------------------------")
 
 import jax
 import jax.numpy as jnp
@@ -24,6 +38,13 @@ import gc
 
 # 強制 64 位精度
 jax.config.update("jax_enable_x64", True)
+
+# [Ops] Device Check
+print(f"[{time.strftime('%H:%M:%S')}] JAX Device Check: {jax.devices()}")
+if 'cpu' in str(jax.devices()[0]).lower():
+    print("⚠️ WARNING: JAX is running on CPU! Performance will be degraded.")
+else:
+    print("✅ SUCCESS: JAX is running on GPU.")
 
 # ============================================================================
 # 0. Configuration & Stress Parameters
@@ -50,15 +71,18 @@ SCAN_PARAMS = [
     
     # Case 3: The Killer
     {'CaseID': 'C3', 'SlotW_nm': 2.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 1.0e18, 'Alpha': 0.2, 'RelayBias': 4.0, 'A1_Step': 0.05},
+
+    # [Case 4] The Wall (Extreme Physics)
+    {'CaseID': 'C4', 'SlotW_nm': 1.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e18, 'Alpha': 0.15, 'RelayBias': 2.5, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
-MAX_STEP_TIME_FIRST = 60.0  # Cold start allowance
-MAX_STEP_TIME_NORMAL = 30.0 # Fast fail for continuation
+MAX_STEP_TIME_FIRST = 60.0  
+MAX_STEP_TIME_NORMAL = 30.0 # [Config] 30s budget for physics stress
 
 # [Algo] Coarse-to-Fine Constants
-COARSE_STRIDE = 5 # Jump 5 grid points at a time
-FINE_BUFFER = 5   # Last 5 steps are fine-grained
+COARSE_STRIDE = 5 
+FINE_BUFFER = 5   
 
 BASELINE_PARAMS = {
     'max_iter': 30, 'tol': 1e-4, 
@@ -216,16 +240,14 @@ class KounA1Solver:
         self.params = params
         self.dt = 1e-4
         
-    def solve_step(self, phi_init, bias_L, bias_R, prev_dt, physics_args, is_relay_hard=False, step_time_limit=30.0):
+    def solve_step(self, phi_init, bias_L, bias_R, prev_dt, physics_args, step_time_limit=30.0):
         nx, ny = physics_args[-2], physics_args[-1]
         
         if self.params['dt_reset']: 
             self.dt = 1e-4
         else: 
-            if is_relay_hard:
-                self.dt = max(prev_dt, 1e-4) 
-            else:
-                self.dt = max(prev_dt * 0.5, 1e-4)
+            # [Algo v1.4.6-004a] True Deprivileged: Standard logic only
+            self.dt = max(prev_dt * 0.5, 1e-4)
         
         self.dt = min(self.dt, self.params['dt_max'])
             
@@ -279,11 +301,8 @@ class KounA1Solver:
             
             RHS = M_inv * res 
             
-            if is_relay_hard and norm_init > 1e1:
-                tol_g, max_g, rst_g = 1e-2, 80, 20 
-            else:
-                tol_g, max_g, rst_g = self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart']
-            
+            # [Algo v1.4.6-004a] True Deprivileged: Always use standard params
+            tol_g, max_g, rst_g = self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart']
             captured_g_params = (tol_g, max_g, rst_g)
 
             d, info = gmres(A_op_bound, RHS, tol=tol_g, maxiter=max_g, restart=rst_g)
@@ -357,7 +376,16 @@ def setup_grid(nx, ny):
     X, Y = jnp.meshgrid(x, y)
     return X, Y, dx, dy
 
-# [Ops v1.4.6] Cache-Safe Probe: Bias-Triggered + Norm-Controlled
+# [Ops v1.4.6-004a] Safe Warmup (Deprivileged)
+def safe_run_gmres(name, func, *args, **kwargs):
+    try:
+        x, _ = func(*args, **kwargs)
+        x.block_until_ready()
+        return True
+    except Exception as e:
+        print(f"    [Warmup Warning] {name} skipped due to backend error: {e}")
+        return False
+
 def warmup_kernels():
     print("\n>>> JIT WARMUP: Compiling Isomorphic Operators for all Grids & Cases...")
     dt_inv = 1.0 / 1e-4
@@ -427,8 +455,7 @@ def warmup_kernels():
                                     eps_map=eps_map, N_dop=N_dop, ni_map=ni_map, Q_trap_map=Q_trap_map, 
                                     dx=dx, dy=dy, nx=nx_i, ny=ny_i)
                 g_base = BASELINE_PARAMS
-                x_b, _ = gmres(A_op_base, -rhs_probe, tol=g_base['gmres_tol'], maxiter=g_base['gmres_maxiter'], restart=g_base['gmres_restart']) 
-                x_b.block_until_ready()
+                safe_run_gmres("Baseline", gmres, A_op_base, -rhs_probe, tol=g_base['gmres_tol'], maxiter=g_base['gmres_maxiter'], restart=g_base['gmres_restart'])
                 
                 # A1 Standard GMRES
                 A_op_a1 = partial(matvec_op_a1, phi_in=phi_init, dt_inv=dt_inv, M_inv=M_inv, bias_L=bias_L, bias_R=bias_R, 
@@ -436,24 +463,22 @@ def warmup_kernels():
                                   dx=dx, dy=dy, nx=nx_i, ny=ny_i)
                 g_a1 = A1_PARAMS
                 rhs_probe_a1 = M_inv * rhs_probe
-                x_a1, _ = gmres(A_op_a1, rhs_probe_a1, tol=g_a1['gmres_tol'], maxiter=g_a1['gmres_maxiter'], restart=g_a1['gmres_restart']) 
-                x_a1.block_until_ready()
+                safe_run_gmres("A1-Std", gmres, A_op_a1, rhs_probe_a1, tol=g_a1['gmres_tol'], maxiter=g_a1['gmres_maxiter'], restart=g_a1['gmres_restart'])
                 
-                # A1 Hard GMRES
-                x_h, _ = gmres(A_op_a1, rhs_probe_a1, tol=1e-2, maxiter=80, restart=20) 
-                x_h.block_until_ready()
-                
-                # [v1.4.5] Bias-Triggered Hard Branch
+                # [v1.4.5] Bias-Triggered Hard Branch (Standard Params Only)
                 res_norm_val = float(jnp.linalg.norm(res))
                 bias_R_probe = bias_R
-                
                 if res_norm_val <= 15.0: 
-                    # Force Hard Relay Branch via Extreme Boundary Condition
                     bias_R_probe = phi_bc_R_base + params['BiasMax'] + 1.0
                 
                 physics_args = (eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
                 dummy_solver = KounA1Solver(A1_PARAMS)
-                dummy_solver.solve_step(phi_init, bias_L, bias_R_probe, 1e-4, physics_args, is_relay_hard=True, step_time_limit=0.5)
+                
+                try:
+                    # [Algo v1.4.6-004a] Deprivileged warmup call
+                    dummy_solver.solve_step(phi_init, bias_L, bias_R_probe, 1e-4, physics_args, step_time_limit=0.5)
+                except Exception as e:
+                    print(f"    [Warmup Warning] Solver-Branch skipped: {e}")
             
             print(f" Done ({time.time()-start_case:.2f}s)")
     print(">>> JIT WARMUP COMPLETE.\n")
@@ -499,6 +524,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     bias_points = []
     
     if solver_type == 'A1':
+        # [Data v1.4.6-004] Force rounding to A1_Step
         k_start = int(np.round(start_bias / step_val))
         n_steps_sprint = int(np.round(a1_span / step_val))
         k_end = k_start + n_steps_sprint
@@ -548,7 +574,6 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     if solver_type == 'A1': n_steps_sprint = int(np.round(a1_span / step_val))
 
     is_relay_run = (solver_type == 'A1' and init_phi is not None)
-    relay_dt_boost_done = False
     
     # Run the schedule
     for step_idx, (k_idx, bias_val, current_step_size) in enumerate(bias_points):
@@ -562,10 +587,9 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         budget = MAX_STEP_TIME_FIRST if is_first_step else MAX_STEP_TIME_NORMAL
         
         if solver_type == 'A1':
-             phi_next, succ, _, res1, rel, iters, extra, last_gmres, next_dt, t_lin, t_res, t_ls, a1_counts, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, current_dt, physics_args, is_relay_hard=is_relay_run, step_time_limit=budget)
+             # [Algo v1.4.6-004a] Deprivileged: No is_relay_hard flag
+             phi_next, succ, _, res1, rel, iters, extra, last_gmres, next_dt, t_lin, t_res, t_ls, a1_counts, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, current_dt, physics_args, step_time_limit=budget)
              current_dt = next_dt
-             if is_relay_run and (not relay_dt_boost_done) and iters == 0:
-                current_dt = 1e-3; relay_dt_boost_done = True
         else:
              phi_next, succ, _, res1, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
              a1_counts = {'step':0,'noise':0,'sniper':0} 
@@ -586,7 +610,13 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         elif is_converged:
             fail_class = "CONV"
             
-        is_anchor = (step_idx == 0 and solver_type == 'A1') # [v1.3.3] Explicit definition
+        is_anchor = (step_idx == 0 and solver_type == 'A1') 
+
+        # [v1.4.6-004] Tag Propagation + [004a] Semantic Fields
+        current_relay_type = relay_meta.get('relay_type', 'NONE') if relay_meta else 'NONE'
+        # Safely get Baseline Fail Info (only exists if relay_type is EARLY)
+        baseline_fail_class = relay_meta.get('baseline_fail_class', 'N/A') if relay_meta else 'N/A'
+        baseline_last_success = relay_meta.get('baseline_last_success', -1.0) if relay_meta else -1.0
 
         row = {
             'solver': solver_type,
@@ -602,9 +632,12 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'time': dur,
             'res1': res1,
             'gmres_boosted': gmres_boosted,
-            'step_exec': current_step_size, # [v1.3.3] Renamed for clarity
+            'step_exec': current_step_size, 
             'is_anchor': is_anchor,
-            'is_relay_mode': is_relay_run, # [v1.3.3] New column
+            'is_relay_mode': is_relay_run,
+            'relay_type': current_relay_type, 
+            'baseline_fail_class': baseline_fail_class, # [004a]
+            'baseline_last_success': baseline_last_success, # [004a]
             'k_idx': k_idx,
             'k_start': bias_points[0][0] if len(bias_points)>0 else 0, 
             'dt': float(current_dt) if solver_type == 'A1' else 0.0,
@@ -614,7 +647,11 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'is_first_step': is_first_step
         }
         if relay_meta:
-            row.update(relay_meta)
+            # We don't update all meta to avoid cluttering row with internal meta logic, 
+            # but standard relay_target/snapped/delta are good.
+            row['relay_target'] = relay_meta.get('relay_target')
+            row['relay_snapped'] = relay_meta.get('relay_snapped')
+            row['relay_delta'] = relay_meta.get('relay_delta')
             
         results.append(row)
         
@@ -632,14 +669,13 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
 
 def main():
     # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
-    # This ensures the Warmup compilation artifacts persist throughout the sweep.
     gc.collect()
     warmup_kernels()
     
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6 (FINAL CACHE LOCK) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-004a (AUDIT GRADE) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -660,7 +696,8 @@ def main():
                 relay_meta = {
                     'relay_target': relay_target,
                     'relay_snapped': relay_bias_snapped,
-                    'relay_delta': snap_delta
+                    'relay_delta': snap_delta,
+                    'relay_type': 'TARGET' # Default
                 }
                 
                 print(f"  # RelaySnap: Target={relay_target}V -> {relay_bias_snapped:.2f}V (Step {base_step}V, Delta {snap_delta:.2e}V)")
@@ -668,7 +705,7 @@ def main():
                 # 1. Baseline
                 stop_bias_base = relay_bias_snapped 
                 
-                df_base, _, max_bias_base, fail_reason_base, phi_relay, _ = run_sweep_stress(
+                df_base, last_phi_base, max_bias_base, fail_reason_base, phi_relay, _ = run_sweep_stress(
                     params, grid_cfg, base_step, 'Baseline', 
                     start_bias=0.0, stop_bias=stop_bias_base,
                     capture_k=relay_k, relay_meta=relay_meta
@@ -690,16 +727,42 @@ def main():
                     'relay_target': relay_target, 'relay_snapped': relay_bias_snapped, 'relay_delta': snap_delta
                 })
                 
-                # 2. A1 Relay (Run Short Span)
-                base_succeeded = (phi_relay is not None) and (not np.isnan(max_bias_base)) and (max_bias_base >= relay_bias_snapped)
+                # [Strategy v1.4.6-004] Early Relay Logic with Snapping
                 
-                if base_succeeded:
-                    start_bias_a1 = relay_bias_snapped
+                relay_phi_to_use = phi_relay
+                start_bias_a1 = relay_bias_snapped
+                relay_type = "TARGET"
+                
+                if phi_relay is None and not np.isnan(max_bias_base):
+                    relay_phi_to_use = last_phi_base
                     
+                    # [Data v1.4.6-004a] Conservative Snapping: Use floor to ensure we don't jump ahead of baseline failure
+                    a1_step_val = params['A1_Step']
+                    # Using floor + epsilon to be safe
+                    k_early = int(np.floor(max_bias_base / a1_step_val + 1e-9))
+                    start_bias_a1 = k_early * a1_step_val
+                    
+                    relay_type = "EARLY"
+                    snap_diff = start_bias_a1 - max_bias_base
+                    
+                    print(f"    [Strategy] Early Relay! Baseline died at {max_bias_base:.4f}V. A1 snapping to {start_bias_a1:.4f}V (Delta {snap_diff:.1e}V)")
+                
+                if relay_phi_to_use is not None:
+                    # Update meta for A1 run
+                    relay_meta_a1 = relay_meta.copy()
+                    relay_meta_a1['relay_type'] = relay_type
+                    
+                    if relay_type == "EARLY":
+                        relay_meta_a1['relay_snapped'] = start_bias_a1
+                        relay_meta_a1['relay_note'] = "EARLY_RELAY"
+                        # [004a] Semantic fields
+                        relay_meta_a1['baseline_fail_class'] = base_fail_class
+                        relay_meta_a1['baseline_last_success'] = max_bias_base
+
                     df_a1, _, max_bias_a1, fail_reason_a1, _, sprint_n = run_sweep_stress(
                         params, grid_cfg, base_step, 'A1',
                         start_bias=start_bias_a1, stop_bias=None, 
-                        init_phi=phi_relay, relay_meta=relay_meta,
+                        init_phi=relay_phi_to_use, relay_meta=relay_meta_a1,
                         a1_span=0.5 
                     )
                     full_logs.append(df_a1)
@@ -715,26 +778,29 @@ def main():
                         'solver': 'A1', 'max_bias': max_bias_a1, 'fail_reason': fail_reason_a1,
                         'fail_class': a1_fail_class,
                         'total_time': df_a1['time'].sum(),
-                        'relay_target': relay_target, 'relay_snapped': relay_bias_snapped, 'relay_delta': snap_delta,
-                        'sprint_n_steps': sprint_n 
+                        'relay_target': relay_target, 'relay_snapped': start_bias_a1,
+                        'relay_delta': snap_delta,
+                        'sprint_n_steps': sprint_n,
+                        'relay_type': relay_type
                     })
                 else:
-                    reason = "CAPTURE_MISSING" if phi_relay is None else "EARLY_FAIL"
-                    print(f"    [Skip A1] Baseline Issue: {reason} (Max {max_bias_base}V vs Snap {relay_bias_snapped}V)")
+                    reason = "BASELINE_ZERO_SUCCESS"
+                    print(f"    [Skip A1] Baseline failed at step 0. No phi to relay.")
                     summary_logs.append({
                         'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
                         'solver': 'A1', 'max_bias': -1, 'fail_reason': reason, 'fail_class': 'SKIPPED', 'total_time': 0,
-                        'relay_target': relay_target, 'relay_snapped': relay_bias_snapped, 'relay_delta': snap_delta
+                        'relay_target': relay_target, 'relay_snapped': relay_bias_snapped, 'relay_delta': snap_delta,
+                        'relay_type': 'NONE'
                     })
                 
                 gc.collect()
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-004a_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-004a_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6_FullLog.csv, Stress_v1.4.6_Summary.csv")
+    print("Saved: Stress_v1.4.6-004a_FullLog.csv, Stress_v1.4.6-004a_Summary.csv")
 
 if __name__ == "__main__":
     main()
