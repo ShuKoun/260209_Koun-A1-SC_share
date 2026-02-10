@@ -1,21 +1,21 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-004a.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-004a (審計級最終版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-004a (Audit-Grade Final)
-版本號 (Version): Harness v1.4.6-004a
-前置版本 (Prev Version): Harness v1.4.6-004
+文件名 (Filename): BenchS_StressHarness_v1.4.6-005.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-005 (失效分離決戰版)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-005 (Failure Separation Showdown)
+版本號 (Version): Harness v1.4.6-005
+前置版本 (Prev Version): Harness v1.4.6-004a
 
 變更日誌 (Changelog):
-    1. [Strategy] 保守接力：Early Relay 的 snapping 改為 floor()，確保 A1 起跑點 ≤ Baseline 成功點，消除「偷跑」嫌疑。
-    2. [Algo] 徹底去特權：移除 run_sweep_stress 中殘餘的 is_relay_hard 參數與 iters==0 邏輯，確保算法純淨。
-    3. [Data] 語義增強：在 A1 的日誌中透傳 Baseline 的失效信息 (last_success_bias, fail_reason, fail_class)，便於因果分析。
-    4. [Invariant] 環境繼承：保留 v1.4.6 的 GPU 防禦與緩存鎖定。
+    1. [Strategy] 決戰高壓：將 Case C4 ("The Wall") 的 RelayBias 從 2.5V 大幅提升至 6.0V。
+       目標：強制 Baseline 進入高非線性、高條件數的死亡區域，誘導其發生自然的數值崩潰 (NUMERIC_FAIL)。
+    2. [Invariant] 架構凍結：嚴格保持 v1.4.6-004a 的所有代碼邏輯、數據結構與 Solver 參數不變。
+       依靠 v004a 已驗證的 Early Relay 機制來保證即使 Baseline 提前死亡，A1 仍能接力上場。
 """
 
 import os
 import sys
 
-# [Env Adaptation] HARDENED GPU SETTINGS
+# [Env Adaptation] HARDENED GPU SETTINGS (Inherited from v1.4.6-004a)
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer="
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".35"
@@ -72,13 +72,15 @@ SCAN_PARAMS = [
     # Case 3: The Killer
     {'CaseID': 'C3', 'SlotW_nm': 2.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 1.0e18, 'Alpha': 0.2, 'RelayBias': 4.0, 'A1_Step': 0.05},
 
-    # [Case 4] The Wall (Extreme Physics)
-    {'CaseID': 'C4', 'SlotW_nm': 1.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e18, 'Alpha': 0.15, 'RelayBias': 2.5, 'A1_Step': 0.05},
+    # [Case 4] The Wall (Extreme Physics) - [v1.4.6-005 Modified]
+    # RelayBias raised to 6.0V to force Baseline into numerical instability region.
+    # Early Relay logic will catch A1 if Baseline fails earlier.
+    {'CaseID': 'C4', 'SlotW_nm': 1.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e18, 'Alpha': 0.15, 'RelayBias': 6.0, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
 MAX_STEP_TIME_FIRST = 60.0  
-MAX_STEP_TIME_NORMAL = 30.0 # [Config] 30s budget for physics stress
+MAX_STEP_TIME_NORMAL = 30.0 # Standard budget
 
 # [Algo] Coarse-to-Fine Constants
 COARSE_STRIDE = 5 
@@ -246,7 +248,6 @@ class KounA1Solver:
         if self.params['dt_reset']: 
             self.dt = 1e-4
         else: 
-            # [Algo v1.4.6-004a] True Deprivileged: Standard logic only
             self.dt = max(prev_dt * 0.5, 1e-4)
         
         self.dt = min(self.dt, self.params['dt_max'])
@@ -301,7 +302,7 @@ class KounA1Solver:
             
             RHS = M_inv * res 
             
-            # [Algo v1.4.6-004a] True Deprivileged: Always use standard params
+            # Deprivileged: Standard params only
             tol_g, max_g, rst_g = self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart']
             captured_g_params = (tol_g, max_g, rst_g)
 
@@ -465,7 +466,7 @@ def warmup_kernels():
                 rhs_probe_a1 = M_inv * rhs_probe
                 safe_run_gmres("A1-Std", gmres, A_op_a1, rhs_probe_a1, tol=g_a1['gmres_tol'], maxiter=g_a1['gmres_maxiter'], restart=g_a1['gmres_restart'])
                 
-                # [v1.4.5] Bias-Triggered Hard Branch (Standard Params Only)
+                # [v1.4.5] Bias-Triggered Hard Branch (Deprivileged: Standard Params)
                 res_norm_val = float(jnp.linalg.norm(res))
                 bias_R_probe = bias_R
                 if res_norm_val <= 15.0: 
@@ -612,9 +613,8 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             
         is_anchor = (step_idx == 0 and solver_type == 'A1') 
 
-        # [v1.4.6-004] Tag Propagation + [004a] Semantic Fields
+        # [v1.4.6-004a] Tag Propagation
         current_relay_type = relay_meta.get('relay_type', 'NONE') if relay_meta else 'NONE'
-        # Safely get Baseline Fail Info (only exists if relay_type is EARLY)
         baseline_fail_class = relay_meta.get('baseline_fail_class', 'N/A') if relay_meta else 'N/A'
         baseline_last_success = relay_meta.get('baseline_last_success', -1.0) if relay_meta else -1.0
 
@@ -647,8 +647,6 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'is_first_step': is_first_step
         }
         if relay_meta:
-            # We don't update all meta to avoid cluttering row with internal meta logic, 
-            # but standard relay_target/snapped/delta are good.
             row['relay_target'] = relay_meta.get('relay_target')
             row['relay_snapped'] = relay_meta.get('relay_snapped')
             row['relay_delta'] = relay_meta.get('relay_delta')
@@ -675,7 +673,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-004a (AUDIT GRADE) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-005 (FAILURE SEPARATION SHOWDOWN) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -797,10 +795,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-004a_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-004a_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-005_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-005_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-004a_FullLog.csv, Stress_v1.4.6-004a_Summary.csv")
+    print("Saved: Stress_v1.4.6-005_FullLog.csv, Stress_v1.4.6-005_Summary.csv")
 
 if __name__ == "__main__":
     main()
