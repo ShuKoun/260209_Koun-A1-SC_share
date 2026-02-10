@@ -1,28 +1,26 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-001-Hardened.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-001 (環境硬化版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-001 (Environment Hardened)
-版本號 (Version): Harness v1.4.6-001-Hardened
-前置版本 (Prev Version): Harness v1.4.6-001
+文件名 (Filename): BenchS_StressHarness_v1.4.6-002.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-002 (極限預算壓測)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-002 (Extreme Budget Stress)
+版本號 (Version): Harness v1.4.6-002
+前置版本 (Prev Version): Harness v1.4.6-001-Hardened
 
 變更日誌 (Changelog):
-    1. [Env] 硬性禁用：直接覆寫 XLA_FLAGS 為 --xla_gpu_enable_command_buffer= (無拼接)，確保 CUDA Graph 徹底關閉。
-    2. [Env] 生存模式：將 XLA_PYTHON_CLIENT_MEM_FRACTION 壓降至 .35，為 CUDA Driver 預留 65% 顯存空間以避免 OOM。
-    3. [Ops] 狀態確認：啟動時打印環境變量以供審計。
-    4. [Invariant] 核心鎖定：預算 (5.0s)、預熱邏輯、算法內核與 v1.4.6-001 完全一致。
+    1. [Config] 預算極限：將 MAX_STEP_TIME_NORMAL 從 5.0s 進一步壓降至 3.0s。
+       目標：尋找 Baseline 的崩潰邊界。已知 5.0s 時 Baseline 存活，3.0s 預計將觸發 Baseline 的 BUDGET_TIMEOUT。
+    2. [Invariant] 環境繼承：保留 v1.4.6-001-Hardened 的所有 GPU 防禦設置 (No CUDA Graph, Mem .35)。
+    3. [Invariant] 核心鎖定：算法邏輯、預熱機制與 v1.4.6 完全一致。
 """
 
 import os
 import sys
 
-# [Env Adaptation] HARDENED GPU SETTINGS
-# 1. Force disable CUDA Graph (Command Buffer) - OVERWRITE, do not append
+# [Env Adaptation] HARDENED GPU SETTINGS (Inherited from v1.4.6-001-Hardened)
+# 1. Force disable CUDA Graph
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer="
-
 # 2. Disable preallocation
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-
-# 3. Survival Mode: Limit JAX to 35% GPU memory to leave massive headroom for Driver/Compilation
+# 3. Survival Mode: Limit JAX to 35% GPU memory
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".35"
 
 print(f"--- Environment Hardening Applied ---")
@@ -38,6 +36,7 @@ import numpy as np
 import time
 from functools import partial
 import pandas as pd
+import sys
 import gc
 
 # 強制 64 位精度
@@ -79,7 +78,7 @@ SCAN_PARAMS = [
 
 # [Ops] Adaptive Budgeting
 MAX_STEP_TIME_FIRST = 60.0  # Cold start allowance (keep high)
-MAX_STEP_TIME_NORMAL = 5.0  # [Config v1.4.6-001] Tight budget (5s)
+MAX_STEP_TIME_NORMAL = 3.0  # [Config v1.4.6-002] EXTREME budget (3s) to kill Baseline
 
 # [Algo] Coarse-to-Fine Constants
 COARSE_STRIDE = 5 # Jump 5 grid points at a time
@@ -676,7 +675,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-001 (BUDGET CONSTRAINT) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-002 (EXTREME BUDGET) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -768,10 +767,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-001_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-001_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-002_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-002_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-001_FullLog.csv, Stress_v1.4.6-001_Summary.csv")
+    print("Saved: Stress_v1.4.6-002_FullLog.csv, Stress_v1.4.6-002_Summary.csv")
 
 if __name__ == "__main__":
     main()
