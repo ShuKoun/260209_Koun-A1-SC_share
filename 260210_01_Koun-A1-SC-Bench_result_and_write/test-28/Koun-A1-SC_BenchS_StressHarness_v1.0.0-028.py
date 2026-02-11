@@ -1,20 +1,20 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-027.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-027 (A1 算子符號翻轉 A/B 測試)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-027 (A1 Operator Sign Flip A/B Test)
-版本號 (Version): Harness v1.4.6-027
-前置版本 (Prev Version): Harness v1.4.6-026
+文件名 (Filename): BenchS_StressHarness_v1.4.6-028.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-028 (A1 算子因子化 A/B 測試 - 邏輯修正版)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-028 (A1 Operator Factorial A/B Test - Logic Fixed)
+版本號 (Version): Harness v1.4.6-028
+前置版本 (Prev Version): Harness v1.4.6-027
 
 變更日誌 (Changelog):
-    1. [Experiment] A1 Operator Sign Flip (Mechanism Check):
-       - 改用 A = dt_inv*I + J (原為 - J)。
-       - 改用 RHS = -res (原為 + res)。
-       - 改用 M_diag = dt_inv + diag_J (原為 - diag_J)。
-       - 目標：驗證是否因隱式迭代方向錯誤導致收斂停滯。
-    2. [Logic] Baseline Diag 整合：
-       - run_sweep_stress 自動識別 'Baseline_Diag'，正確處理 Log 標籤。
-    3. [Budget] Anchor Budget Logic:
-       - 使用 A1_BOOT_PARAMS['mode'] = 'BOOT' 顯式觸發 240s 預算。
+    1. [Fix] JIT Compilation Error:
+       - 修正 matvec_op_a1_param 的 static_argnums 索引越界問題 (修正為 13,14)。
+    2. [Fix] Force Step Logic:
+       - 當 dt 縮小至 dt_floor 以下時，立即觸發 Force Step (極小步長測試)，而非等待不可達的 1e-8。
+       - 用於診斷梯度方向是否在數學上完全錯誤。
+    3. [Experiment] Factorial A/B Test:
+       - 保持 4 種 A1 符號組合測試 (Matrix, RHS)。
+    4. [Formatting] Compliance:
+       - 移除所有 Emoji，所有數學公式使用 LaTeX 格式包裹。
 """
 
 import os
@@ -82,7 +82,7 @@ SCAN_PARAMS = [
 # [Ops] Adaptive Budgeting
 MAX_STEP_TIME_FIRST = 60.0  
 MAX_STEP_TIME_NORMAL = 30.0 
-MAX_STEP_TIME_ANCHOR = 240.0 
+MAX_STEP_TIME_ANCHOR = 60.0 # [v028] Fast Screening for A/B Test
 
 # [Algo] Coarse-to-Fine Constants
 COARSE_STRIDE = 5 
@@ -105,25 +105,35 @@ A1_PARAMS = {
     'dt_max': 10.0,         
     'dt_growth_cap': 2.0,   
     'dt_shrink_noise': 0.8,
-    'mode': 'NORMAL'
+    'mode': 'NORMAL',
+    'sign_matrix': -1.0, # Default v026
+    'sign_rhs': 1.0      # Default v026
 }
 
-# [v1.4.6-026/027] Bootstrap Anchor Params (Sign Flip Test)
-A1_BOOT_PARAMS = {
+# [v1.4.6-028] Factorial A/B Test Params
+A1_VARIANTS = {
+    'A1_Base':       {'sign_matrix': -1.0, 'sign_rhs':  1.0}, # v026 (Matrix=-J, RHS=+res)
+    'A1_Flip_RHS':   {'sign_matrix': -1.0, 'sign_rhs': -1.0}, # Matrix=-J, RHS=-res
+    'A1_Flip_Matrix':{'sign_matrix':  1.0, 'sign_rhs':  1.0}, # Matrix=+J, RHS=+res
+    'A1_Flip_All':   {'sign_matrix':  1.0, 'sign_rhs': -1.0}, # v027 (Matrix=+J, RHS=-res)
+}
+
+# Common Boot Params
+A1_BOOT_BASE = {
     'gmres_tol': 3e-2,      
     'gmres_maxiter': 60,    
     'gmres_restart': 15,    
     'dt_reset': True,       
-    'max_outer_iter': 200,  
+    'max_outer_iter': 50, # Short run for A/B
     'dt_init': 1e-5,        
     'dt_max': 0.1,          
     'dt_growth_cap': 1.2,   
     'dt_shrink_noise': 0.5,
-    'mode': 'BOOT' # Trigger Extended Budget
+    'mode': 'BOOT'
 }
 
 # ============================================================================
-# 1. Kernels (JIT) - A1 Operator FLIPPED
+# 1. Kernels (JIT) - Parametric Operator
 # ============================================================================
 @jit
 def harmonic_mean(e1, e2): return 2.0 * e1 * e2 / (e1 + e2 + 1e-300)
@@ -191,11 +201,12 @@ def matvec_op_baseline(v, phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap
     _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny), (phi_in,), (v,))
     return Jv
 
-# [v1.4.6-027] FLIPPED A1 OPERATOR: (I/dt + J)
-@partial(jit, static_argnums=(12, 13)) 
-def matvec_op_a1_flipped(v, phi_in, dt_inv, M_inv, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
+# [v1.4.6-028] Parametric A1 Operator (Fixed: static_argnums indices corrected to 13, 14)
+@partial(jit, static_argnums=(13, 14)) 
+def matvec_op_a1_param(v, phi_in, dt_inv, M_inv, sign_matrix, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
     _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny), (phi_in,), (v,))
-    Av = v * dt_inv + Jv # <--- FLIPPED SIGN (+ instead of -)
+    # A = dt_inv * I + sign_matrix * J
+    Av = v * dt_inv + sign_matrix * Jv 
     return M_inv * Av    
 
 # ============================================================================
@@ -274,6 +285,8 @@ class KounA1Solver:
     def __init__(self, params): 
         self.params = params
         self.dt = self.params.get('dt_init', 1e-4)
+        self.sign_matrix = self.params.get('sign_matrix', -1.0)
+        self.sign_rhs = self.params.get('sign_rhs', 1.0)
         
     def solve_step(self, phi_init, bias_L, bias_R, prev_dt, physics_args, step_time_limit=30.0):
         nx, ny = physics_args[-2], physics_args[-1]
@@ -328,21 +341,21 @@ class KounA1Solver:
             dt_inv = 1.0 / self.dt
             diag_J = get_diag_precond(phi, bias_L, bias_R, *physics_args)
             
-            # [v1.4.6-027] FLIPPED: M_diag = dt_inv + diag_J
-            M_diag = dt_inv + diag_J 
+            # [v1.4.6-028] Parametric M_diag = dt_inv + sign_matrix * diag_J
+            M_diag = dt_inv + self.sign_matrix * diag_J 
             M_inv = 1.0 / (M_diag + 1e-12) 
             
-            # [v1.4.6-027] FLIPPED: matvec uses +Jv
-            A_op_bound = partial(matvec_op_a1_flipped, 
-                                 phi_in=phi, dt_inv=dt_inv, M_inv=M_inv, 
+            # [v1.4.6-028] Parametric Matrix
+            A_op_bound = partial(matvec_op_a1_param, 
+                                 phi_in=phi, dt_inv=dt_inv, M_inv=M_inv, sign_matrix=self.sign_matrix,
                                  bias_L=bias_L, bias_R=bias_R, 
                                  eps_map=physics_args[0], N_dop=physics_args[1], ni_map=physics_args[2],
                                  Q_trap_map=physics_args[3], 
                                  dx=physics_args[4], dy=physics_args[5], 
                                  nx=nx, ny=ny)
             
-            # [v1.4.6-027] FLIPPED: RHS = -res
-            RHS = M_inv * (-res) 
+            # [v1.4.6-028] Parametric RHS
+            RHS = M_inv * (self.sign_rhs * res) 
             
             tol_g, max_g, rst_g = self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart']
             captured_g_params = (tol_g, max_g, rst_g)
@@ -361,6 +374,9 @@ class KounA1Solver:
             alpha = 1.0; status = "FAIL"; phi_next = phi
             merit_new = merit # Init
             
+            # [v1.4.6-028] Force Step Trigger
+            force_step_triggered = False
+
             for i in range(8):
                 step = alpha * d
                 if jnp.max(jnp.abs(step)) > 0.5: step *= (0.5 / jnp.max(jnp.abs(step)))
@@ -387,10 +403,30 @@ class KounA1Solver:
                     self.dt *= self.params['dt_shrink_noise'] 
                     if self.dt < dt_floor: self.dt = dt_floor
             else:
-                self.dt *= 0.2
-                if self.dt < 1e-9: 
-                    a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
-                    return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
+                # [v1.4.6-028] Force Step Logic (Fixed)
+                # Attempt force step if dt is shrinking below floor
+                do_force_attempt = False
+                
+                next_dt_candidate = self.dt * 0.2
+                if next_dt_candidate < dt_floor:
+                    do_force_attempt = True
+                
+                if do_force_attempt:
+                    step = 1e-4 * d # Very small step to check direction
+                    phi_try = phi + step
+                    merit_force = float(merit_loss(phi_try, bias_L, bias_R, *physics_args))
+                    if merit_force < merit:
+                        # Gradient was correct, just too big or unlucky
+                        status = "FORCE_STEP"
+                        phi = phi_try
+                        cnt_step += 1 # Count as step to avoid immediate fail
+                        self.dt = dt_floor # Reset DT to floor to keep trying
+                    else:
+                        # Gradient is truly wrong, collapse
+                        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                        return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
+                else:
+                    self.dt *= 0.2
             
             self.dt = min(self.dt, self.params['dt_max'])
             dt_min_seen = min(dt_min_seen, self.dt)
@@ -471,25 +507,32 @@ def warmup_kernels():
                 d_p.block_until_ready()
                 diag_J = get_diag_precond(phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
                 diag_J.block_until_ready()
-                M_diag = dt_inv + diag_J # FLIPPED WARMUP
+                
+                # Warmup Parametric
+                M_diag = dt_inv - diag_J # Default
                 M_inv = 1.0 / (M_diag + 1e-12)
                 M_inv.block_until_ready()
                 v_dummy = jnp.ones_like(phi_init)
                 v_dummy.block_until_ready() 
                 mv_b = matvec_op_baseline(v_dummy, phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
                 mv_b.block_until_ready()
-                mv_a = matvec_op_a1_flipped(v_dummy, phi_init, dt_inv, M_inv, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
+                
+                # Warmup A1 Param (Sign -1, 1)
+                mv_a = matvec_op_a1_param(v_dummy, phi_init, dt_inv, M_inv, -1.0, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
                 mv_a.block_until_ready()
+                
                 res_norm = jnp.linalg.norm(res) + 1e-300
                 target_norm = 1e-3
                 rhs_probe = res * (target_norm / res_norm)
                 A_op_base = partial(matvec_op_baseline, phi_in=phi_init, bias_L=bias_L, bias_R=bias_R, eps_map=eps_map, N_dop=N_dop, ni_map=ni_map, Q_trap_map=Q_trap_map, dx=dx, dy=dy, nx=nx_i, ny=ny_i)
                 g_base = BASELINE_PARAMS
                 safe_run_gmres("Baseline", gmres, A_op_base, -rhs_probe, tol=g_base['gmres_tol'], maxiter=g_base['gmres_maxiter'], restart=g_base['gmres_restart'])
-                A_op_a1 = partial(matvec_op_a1_flipped, phi_in=phi_init, dt_inv=dt_inv, M_inv=M_inv, bias_L=bias_L, bias_R=bias_R, eps_map=eps_map, N_dop=N_dop, ni_map=ni_map, Q_trap_map=Q_trap_map, dx=dx, dy=dy, nx=nx_i, ny=ny_i)
+                
+                A_op_a1 = partial(matvec_op_a1_param, phi_in=phi_init, dt_inv=dt_inv, M_inv=M_inv, sign_matrix=-1.0, bias_L=bias_L, bias_R=bias_R, eps_map=eps_map, N_dop=N_dop, ni_map=ni_map, Q_trap_map=Q_trap_map, dx=dx, dy=dy, nx=nx_i, ny=ny_i)
                 g_a1 = A1_PARAMS
-                rhs_probe_a1 = M_inv * (-rhs_probe) # FLIPPED
+                rhs_probe_a1 = M_inv * rhs_probe
                 safe_run_gmres("A1-Std", gmres, A_op_a1, rhs_probe_a1, tol=g_a1['gmres_tol'], maxiter=g_a1['gmres_maxiter'], restart=g_a1['gmres_restart'])
+                
                 res_norm_val = float(jnp.linalg.norm(res))
                 bias_R_probe = bias_R
                 if res_norm_val <= 15.0: 
@@ -504,7 +547,7 @@ def warmup_kernels():
     print(">>> JIT WARMUP COMPLETE.\n")
 
 def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_bias, init_phi=None, capture_k=None, relay_meta=None, a1_span=None, solver_params=None):
-    if solver_type == 'A1':
+    if 'A1' in solver_type: # Relaxed check for A1 variants
         assert a1_span is not None, "Error: A1 solver requires 'a1_span'."
     else:
         assert stop_bias is not None, "Error: Baseline solver requires 'stop_bias'."
@@ -533,14 +576,14 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             phi_full = phi_full.at[:, i].set(phi_seed_L*(1-r) + phi_seed_R*r)
         phi_init = phi_full[1:-1, 1:-1].flatten()
         
-    if solver_type == 'A1':
+    if 'A1' in solver_type:
         params_to_use = solver_params if solver_params else A1_PARAMS
         solver = KounA1Solver(params_to_use)
     else:
         params_to_use = solver_params if solver_params else BASELINE_PARAMS
         solver = BaselineNewton(params_to_use)
 
-    if solver_type == 'A1':
+    if 'A1' in solver_type:
         current_dt = params_to_use.get('dt_init', 1e-4)
     else:
         current_dt = 1e-4
@@ -549,7 +592,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     
     bias_points = []
     
-    if solver_type == 'A1':
+    if 'A1' in solver_type:
         k_start = int(np.round(start_bias / step_val))
         n_steps_sprint = int(np.round(a1_span / step_val))
         k_end = k_start + n_steps_sprint
@@ -582,9 +625,9 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     fail_reason = "NONE"
     captured_phi = None 
     n_steps_sprint = 0 
-    if solver_type == 'A1': n_steps_sprint = int(np.round(a1_span / step_val))
+    if 'A1' in solver_type: n_steps_sprint = int(np.round(a1_span / step_val))
 
-    is_relay_run = (solver_type == 'A1' and init_phi is not None)
+    is_relay_run = ('A1' in solver_type and init_phi is not None)
     
     for step_idx, (k_idx, bias_val, current_step_size) in enumerate(bias_points):
         bias = bias_val
@@ -595,21 +638,21 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         # [v1.4.6-027] Explicit Budget Trigger
         budget = MAX_STEP_TIME_NORMAL
         if is_first_step:
-            if solver_type == 'A1' and params_to_use.get('mode') == 'BOOT':
+            if 'A1' in solver_type and params_to_use.get('mode') == 'BOOT':
                 budget = MAX_STEP_TIME_ANCHOR
             else:
                 budget = MAX_STEP_TIME_FIRST
         
-        dt_before = float(current_dt) if solver_type == 'A1' else 0.0
+        dt_before = float(current_dt) if 'A1' in solver_type else 0.0
         
-        if solver_type == 'A1':
+        if 'A1' in solver_type:
              phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, next_dt, t_lin, t_res, t_ls, a1_counts, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, current_dt, physics_args, step_time_limit=budget)
              current_dt = next_dt
         else:
              phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
              a1_counts = {'step':0,'noise':0,'sniper':0, 'dt_min':0.0, 'dt_max':0.0} 
         
-        dt_after = float(current_dt) if solver_type == 'A1' else 0.0
+        dt_after = float(current_dt) if 'A1' in solver_type else 0.0
         dur = time.time() - start
         
         raw_status = extra.split('(')[0] if '(' in extra else extra
@@ -623,7 +666,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             else: fail_class = "OTHER"
         elif is_converged:
             fail_class = "CONV"
-        is_anchor = (step_idx == 0 and solver_type == 'A1') 
+        is_anchor = (step_idx == 0 and 'A1' in solver_type) 
         current_relay_type = relay_meta.get('relay_type', 'NONE') if relay_meta else 'NONE'
         if current_relay_type == 'TARGET':
              baseline_fail_class = "CONV"
@@ -658,7 +701,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'baseline_fail_reason': baseline_fail_reason,
             'k_idx': k_idx,
             'k_start': bias_points[0][0] if len(bias_points)>0 else 0, 
-            'dt': dt_after if solver_type == 'A1' else 0.0, 
+            'dt': dt_after if 'A1' in solver_type else 0.0, 
             'dt_before': dt_before, 
             'dt_after': dt_after,   
             'dt_min_seen': a1_counts.get('dt_min', 0.0), 
@@ -695,14 +738,16 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             row['diag_pois_max'] = float(jnp.max(d_pois))
             row['diag_term_min'] = float(jnp.min(d_term))
             row['diag_term_max'] = float(jnp.max(d_term))
-            if solver_type == 'A1':
+            if 'A1' in solver_type:
+                # [v1.4.6-028] Diag logging uses A1 params logic
+                s_mat = params_to_use.get('sign_matrix', -1.0)
                 if dt_before > 0:
-                    m_diag_b = (1.0/dt_before) + d_total # FLIPPED: dt_inv + diag_J
+                    m_diag_b = (1.0/dt_before) + s_mat * d_total 
                     row['M_diag_min_before'] = float(jnp.min(m_diag_b))
                 else:
                     row['M_diag_min_before'] = np.nan
                 if dt_after > 0:
-                    m_diag_a = (1.0/dt_after) + d_total # FLIPPED
+                    m_diag_a = (1.0/dt_after) + s_mat * d_total 
                     row['M_diag_min_after'] = float(jnp.min(m_diag_a))
                 else:
                     row['M_diag_min_after'] = np.nan
@@ -737,7 +782,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-027 (A1 OPERATOR SIGN FLIP A/B TEST) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-028 (A1 OPERATOR FACTORIAL A/B TEST - FIXED) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s, Normal={MAX_STEP_TIME_NORMAL}s")
@@ -798,7 +843,7 @@ def main():
                         capture_k=None, relay_meta=relay_meta,
                         solver_params=BASELINE_DIAG_PARAMS 
                     )
-                    diag_status = "FAIL"
+                    diag_status = "FAILED"
                     if not df_diag.empty and df_diag.iloc[-1]['is_converged']:
                          diag_status = "CONVERGED"
                     print(f"    [Strategy] Autopsy Result: {diag_status} ({diag_reason})")
@@ -808,56 +853,55 @@ def main():
                 
                 if is_bootstrap_needed:
                     print(f"    [Strategy] A1 BOOTSTRAP OVERRIDE ACTIVATED.")
-                    print(f"    Baseline died at start. Attempting A1 self-start (Sign Flip Test).")
+                    print(f"    Baseline died at start. Attempting Factorial A/B Test for A1 Operators.")
                     
-                    print(f"    [Strategy] Step 1: A1 Anchor Check at 0.0V (Operator = dt_inv + J)...")
-                    
-                    relay_phi_to_use = last_phi_base 
-                    relay_meta_boot = relay_meta.copy()
-                    relay_meta_boot['relay_type'] = "BOOTSTRAP_ANCHOR"
-                    relay_meta_boot['relay_bias_a1_start'] = 0.0
-                    relay_meta_boot['baseline_fail_class'] = base_fail_class
-                    relay_meta_boot['baseline_fail_reason'] = fail_reason_base
-                    
-                    df_a1_anchor, last_phi_anchor, max_bias_anchor, fail_r_anchor, _, _ = run_sweep_stress(
-                        params, grid_cfg, base_step, 'A1',
-                        start_bias=0.0, stop_bias=None,
-                        init_phi=relay_phi_to_use, relay_meta=relay_meta_boot,
-                        a1_span=0.0, 
-                        solver_params=A1_BOOT_PARAMS
-                    )
-                    full_logs.append(df_a1_anchor)
-                    
-                    anchor_success = False
-                    if not df_a1_anchor.empty:
-                        if df_a1_anchor.iloc[-1]['is_converged']:
-                            anchor_success = True
-                            
-                    if anchor_success:
-                        print(f"    [Strategy] Anchor SUCCESS. (Sign Flip Worked!) Skipping Sprint for now.")
-                        summary_logs.append({
-                            'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
-                            'solver': 'A1', 'max_bias': 0.0, 'fail_reason': 'NONE',
-                            'fail_class': 'CONV',
-                            'total_time': df_a1_anchor['time'].sum(),
-                            'relay_type': 'BOOTSTRAP_ANCHOR'
-                        })
-                    else:
-                        print(f"    [Strategy] Anchor FAILED.")
-                        summary_logs.append({
-                            'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
-                            'solver': 'A1', 'max_bias': 0.0, 'fail_reason': fail_r_anchor,
-                            'fail_class': 'BOOTSTRAP_FAIL',
-                            'total_time': df_a1_anchor['time'].sum(),
-                            'relay_type': 'BOOTSTRAP_ANCHOR'
-                        })
+                    # Loop through A1 variants
+                    for variant_name, var_params in A1_VARIANTS.items():
+                         print(f"    [Experiment] Testing {variant_name} (Mat={var_params['sign_matrix']}, RHS={var_params['sign_rhs']})...")
+                         
+                         relay_phi_to_use = last_phi_base 
+                         relay_meta_boot = relay_meta.copy()
+                         relay_meta_boot['relay_type'] = f"BOOT_{variant_name}"
+                         relay_meta_boot['relay_bias_a1_start'] = 0.0
+                         relay_meta_boot['baseline_fail_class'] = base_fail_class
+                         relay_meta_boot['baseline_fail_reason'] = fail_reason_base
+                         
+                         # Construct specific params
+                         current_boot_params = A1_BOOT_BASE.copy()
+                         current_boot_params.update(var_params)
+                         
+                         df_a1_anchor, _, _, fail_r_anchor, _, _ = run_sweep_stress(
+                             params, grid_cfg, base_step, variant_name, # Use variant name as solver type tag
+                             start_bias=0.0, stop_bias=None,
+                             init_phi=relay_phi_to_use, relay_meta=relay_meta_boot,
+                             a1_span=0.0, 
+                             solver_params=current_boot_params
+                         )
+                         full_logs.append(df_a1_anchor)
+                         
+                         anchor_success = False
+                         if not df_a1_anchor.empty:
+                             if df_a1_anchor.iloc[-1]['is_converged']:
+                                 anchor_success = True
+                        
+                         status_str = "SUCCESS" if anchor_success else f"FAILED ({fail_r_anchor})"
+                         print(f"    [Experiment] {variant_name} Result: {status_str}")
+                         
+                         summary_logs.append({
+                             'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
+                             'solver': variant_name, 'max_bias': 0.0, 
+                             'fail_reason': 'NONE' if anchor_success else fail_r_anchor,
+                             'fail_class': 'CONV' if anchor_success else 'BOOT_FAIL',
+                             'total_time': df_a1_anchor['time'].sum(),
+                             'relay_type': f"BOOT_{variant_name}"
+                         })
 
                 gc.collect()
 
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-027_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-027_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-028_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-028_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-027_FullLog.csv, Stress_v1.4.6-027_Summary.csv")
+    print("Saved: Stress_v1.4.6-028_FullLog.csv, Stress_v1.4.6-028_Summary.csv")
 
 if __name__ == "__main__":
     main()

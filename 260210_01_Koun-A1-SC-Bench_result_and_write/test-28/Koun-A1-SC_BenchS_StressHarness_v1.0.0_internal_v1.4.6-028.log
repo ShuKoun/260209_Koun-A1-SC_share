@@ -1,0 +1,70 @@
+--- Environment Hardening Applied ---
+XLA_FLAGS: --xla_gpu_enable_command_buffer=
+MEM_FRACTION: .35
+-------------------------------------
+[13:43:33] JAX Device Check: [cuda(id=0)]
+SUCCESS: JAX is running on GPU.
+
+>>> JIT WARMUP: Compiling Isomorphic Operators for all Grids & Cases...
+  [Warmup Grid] MegaUltra2 (640x320)... [Biases: ['0.000', '12.000']]  Done (4.89s)
+>>> JIT WARMUP COMPLETE.
+
+=== BENCHMARK S: STRESS HARNESS v1.4.6-028 (A1 OPERATOR FACTORIAL A/B TEST - FIXED) ===
+Grid List: ['MegaUltra2']
+Step List: [0.2, 0.4]
+Time Budget: Anchor=60.0s, Normal=30.0s
+
+>>> Stress Group: MegaUltra2 | Step=0.2V
+  # RelaySnap: Target=12.0V -> 12.00V (Step 0.2V, Delta 0.00e+00V)
+  > [Baseline] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->...12.00V (K-Space C2F)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] Baseline Autopsy: Retrying 0.0V with 100 iters...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->...0.00V (K-Space C2F)
+    [Strategy] Autopsy Result: CONVERGED (NONE)
+    [Strategy] A1 BOOTSTRAP OVERRIDE ACTIVATED.
+    Baseline died at start. Attempting Factorial A/B Test for A1 Operators.
+    [Experiment] Testing A1_Base (Mat=-1.0, RHS=1.0)...
+  > [A1_Base] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Experiment] A1_Base Result: FAILED (MAX_ITER)
+    [Experiment] Testing A1_Flip_RHS (Mat=-1.0, RHS=-1.0)...
+  > [A1_Flip_RHS] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (DT_COLLAPSE)
+    [Experiment] A1_Flip_RHS Result: FAILED (DT_COLLAPSE)
+    [Experiment] Testing A1_Flip_Matrix (Mat=1.0, RHS=1.0)...
+  > [A1_Flip_Matrix] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Experiment] A1_Flip_Matrix Result: FAILED (MAX_ITER)
+    [Experiment] Testing A1_Flip_All (Mat=1.0, RHS=-1.0)...
+  > [A1_Flip_All] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (DT_COLLAPSE)
+    [Experiment] A1_Flip_All Result: FAILED (DT_COLLAPSE)
+
+>>> Stress Group: MegaUltra2 | Step=0.4V
+  # RelaySnap: Target=12.0V -> 12.00V (Step 0.4V, Delta 0.00e+00V)
+  > [Baseline] Grid=MegaUltra2(640x320), Step=0.4V, Range=0.00->...12.00V (K-Space C2F)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] Baseline Autopsy: Retrying 0.0V with 100 iters...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.4V, Range=0.00->...0.00V (K-Space C2F)
+    [Strategy] Autopsy Result: CONVERGED (NONE)
+    [Strategy] A1 BOOTSTRAP OVERRIDE ACTIVATED.
+    Baseline died at start. Attempting Factorial A/B Test for A1 Operators.
+    [Experiment] Testing A1_Base (Mat=-1.0, RHS=1.0)...
+  > [A1_Base] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Experiment] A1_Base Result: FAILED (MAX_ITER)
+    [Experiment] Testing A1_Flip_RHS (Mat=-1.0, RHS=-1.0)...
+  > [A1_Flip_RHS] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (DT_COLLAPSE)
+    [Experiment] A1_Flip_RHS Result: FAILED (DT_COLLAPSE)
+    [Experiment] Testing A1_Flip_Matrix (Mat=1.0, RHS=1.0)...
+  > [A1_Flip_Matrix] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Experiment] A1_Flip_Matrix Result: FAILED (MAX_ITER)
+    [Experiment] Testing A1_Flip_All (Mat=1.0, RHS=-1.0)...
+  > [A1_Flip_All] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (DT_COLLAPSE)
+    [Experiment] A1_Flip_All Result: FAILED (DT_COLLAPSE)
+
+=== STRESS TEST COMPLETE ===
+Saved: Stress_v1.4.6-028_FullLog.csv, Stress_v1.4.6-028_Summary.csv
