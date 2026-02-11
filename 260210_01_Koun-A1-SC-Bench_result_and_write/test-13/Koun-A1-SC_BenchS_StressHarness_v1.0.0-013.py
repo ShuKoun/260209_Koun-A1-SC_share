@@ -1,15 +1,16 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-012.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-012 (物理加硬 B3-Extreme: Alpha 歸零)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-012 (Physics Hardening B3-Extreme: Alpha Zero)
-版本號 (Version): Harness v1.4.6-012
-前置版本 (Prev Version): Harness v1.4.6-011
+文件名 (Filename): BenchS_StressHarness_v1.4.6-013.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-013 (偏壓域擴展 B4: 12V 極限 - Hotfix)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-013 (Bias Ceiling Extension B4: 12V Limit - Hotfix)
+版本號 (Version): Harness v1.4.6-013
+前置版本 (Prev Version): Harness v1.4.6-012
 
 變更日誌 (Changelog):
-    1. [Strategy] 物理加硬 (B3-Extreme)：將 Case C4 的 Alpha 從 0.05 進一步壓至 0.00 (絕對非對稱)。
-       目標：在幾何 (1.0nm) 和電荷 (3.0e19) 鎖定極限下，測試單邊極限電場是否能擊穿 Baseline。
-    2. [Invariant] 參數鎖定：保持 SlotW=1.0、Q_trap=3.0e19、RelayBias=8.0 不變。
-    3. [Invariant] 架構繼承：完全繼承 v1.4.6-011 的代碼邏輯與 Solver 參數。
+    1. [Strategy] 偏壓域擴展 (B4)：將 Case C4 的 BiasMax 與 RelayBias 從 8.0V 提升至 12.0V。
+       目標：在幾何 (1.0nm)、電荷 (3e19) 與不對稱性 (Alpha=0.00) 均已鎖定極限的前提下，
+       通過指數級擴展電壓域，試圖觸發 Poisson-Boltzmann 方程的指數項爆炸。
+    2. [Fix] 修復 v1.4.6-013 初始版在 warmup_kernels 中的語法回歸錯誤。
+    3. [Invariant] 參數鎖定：保持 SlotW=1.0、Q_trap=3.0e19、Alpha=0.00 不變。
 """
 
 import os
@@ -73,9 +74,9 @@ SCAN_PARAMS = [
     {'CaseID': 'C3', 'SlotW_nm': 2.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 1.0e18, 'Alpha': 0.2, 'RelayBias': 4.0, 'A1_Step': 0.05},
 
     # [Case 4] The Wall (Extreme Physics)
-    # [v1.4.6-012] Physical Hardening B3-Extreme: Alpha reduced to 0.00 (Zero/Absolute Asymmetry)
-    # SlotW=1.0nm (B1), Q_trap=3.0e19 (B2-Extreme), RelayBias=8.0V (A3) -> Multi-Dimension Stress
-    {'CaseID': 'C4', 'SlotW_nm': 1.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 8.0, 'A1_Step': 0.05},
+    # [v1.4.6-013] Bias Ceiling B4: BiasMax/RelayBias -> 12.0V
+    # SlotW=1.0nm (B1), Q_trap=3.0e19 (B2-Extreme), Alpha=0.00 (B3-Extreme) -> Multi-Dimension Stress
+    {'CaseID': 'C4', 'SlotW_nm': 1.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
@@ -692,7 +693,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-012 (PHYSICS HARDENING B3-Extreme) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-013 (BIAS CEILING B4) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -839,10 +840,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-012_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-012_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-013_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-013_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-012_FullLog.csv, Stress_v1.4.6-012_Summary.csv")
+    print("Saved: Stress_v1.4.6-013_FullLog.csv, Stress_v1.4.6-013_Summary.csv")
 
 if __name__ == "__main__":
     main()
