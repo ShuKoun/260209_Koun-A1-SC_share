@@ -1,20 +1,19 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-021.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-021 (物理破壞: 屏蔽崩潰 - Screening-Break)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-021 (Physics Breaking: Screening-Break Probe)
-版本號 (Version): Harness v1.4.6-021
-前置版本 (Prev Version): Harness v1.4.6-020
+文件名 (Filename): BenchS_StressHarness_v1.4.6-022.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-022 (物理破壞: 載流子抑制 - Carrier-Suppression)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-022 (Physics Breaking: Carrier-Suppression Probe)
+版本號 (Version): Harness v1.4.6-022
+前置版本 (Prev Version): Harness v1.4.6-021
 
 變更日誌 (Changelog):
-    1. [Strategy] 物理屏蔽破壞 (Screening-Break)：
-       幾何手段 (v015-v020) 已窮盡，轉向物理參數攻擊。
-       大幅降低摻雜濃度以削弱 Debye 屏蔽效應，迫使邊界電壓穿透至器件內部。
-    2. [Modification] Doping Collapse：
-       Case C4:
-       - N_high: 1e21 -> 1e17
-       - N_low:  1e17 -> 1e13
-    3. [Invariant] 繼承 v020：
-       保持 MegaUltra2 網格、邊界耦合穿刺幾何 (x_center=dx)、SlotW=0.5nm、以及完整的結構診斷探針。
+    1. [Strategy] 載流子抑制 (Carrier-Suppression)：
+       v021 降低摻雜無效，診斷顯示屏蔽效應由本徵載流子指數項主導。
+       大幅削減 ni 以拆除最後的物理屏蔽牆。
+    2. [Modification] Intrinsic Carrier Collapse：
+       - ni: 1.0e10 -> 1.0e4 (Down 6 orders)
+       - ni_vac: 1.0e-20 -> 1.0e-26 (Sync down)
+    3. [Invariant] 繼承 v021：
+       保持 MegaUltra2 網格、邊界耦合穿刺幾何、低摻雜 C4 配置、以及診斷探針。
 """
 
 import os
@@ -56,12 +55,15 @@ else:
 # ============================================================================
 q = 1.602e-19; kb = 1.38e-23; T = 300.0; eps_0 = 8.85e-14
 Vt = (kb * T) / q
-ni = 1.0e10; ni_vac = 1.0e-20
+
+# [v1.4.6-022] Carrier Suppression (The Breaker)
+ni = 1.0e4      # Old: 1.0e10
+ni_vac = 1.0e-26 # Old: 1.0e-20
 
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-021] Inherit MegaUltra2
+# [v1.4.6-022] Inherit MegaUltra2
 GRID_LIST = [
     {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
@@ -71,10 +73,8 @@ BASELINE_STEP_LIST = [0.2, 0.4]
 
 # Case Definition
 SCAN_PARAMS = [
-    # [v1.4.6-021] C4 Only - Screening Break
-    # N_high: 1e21 -> 1e17
-    # N_low:  1e17 -> 1e13
-    # Invariants: SlotW=0.5, BiasMax=12, Q_trap=3e19
+    # [v1.4.6-022] C4 Only (Inherited from v021)
+    # SlotW=0.5, BiasMax=12, Q_trap=3e19, Low Doping (1e17/1e13)
     {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e17, 'N_low': 1e13, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
@@ -788,7 +788,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-021 (PHYSICS BREAKING: SCREENING-BREAK PROBE - C4 ONLY) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-022 (PHYSICS BREAKING: CARRIER-SUPPRESSION PROBE - C4 ONLY) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -935,10 +935,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-021_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-021_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-022_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-022_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-021_FullLog.csv, Stress_v1.4.6-021_Summary.csv")
+    print("Saved: Stress_v1.4.6-022_FullLog.csv, Stress_v1.4.6-022_Summary.csv")
 
 if __name__ == "__main__":
     main()
