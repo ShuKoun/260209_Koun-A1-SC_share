@@ -1,19 +1,21 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-032.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-032 (無條件驗屍與零偏壓掃描 - 修正版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-032 (Unconditional Autopsy & Zero-Bias Sweep - Fixed)
-版本號 (Version): Harness v1.4.6-032
-前置版本 (Prev Version): Harness v1.4.6-031 (Broken)
+文件名 (Filename): BenchS_StressHarness_v1.4.6-033.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-033 (結構性非單調構造 - 修復版)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-033 (Structural Non-Monotonicity Trap - Fixed)
+版本號 (Version): Harness v1.4.6-033
+前置版本 (Prev Version): Harness v1.4.6-032
 
 變更日誌 (Changelog):
-    1. [Fix] NameError:
-       - 恢復缺失的 A1_PARAMS 定義，修復 warmup_kernels 中的引用錯誤。
-    2. [Strategy] Unconditional Autopsy:
-       - 對每個 Q_trap Case，首先強制運行 Baseline_Diag (max_iter=100) @ 0.0V。
-    3. [Strategy] Zero-Bias Focus:
-       - 僅測試 0.0V Anchor 點。
-    4. [Physics] Sweep Range:
-       - Q_trap: 1e20, 3e20, 1e21 (對數級掃描)。
+    1. [Fix] NameError in Warmup:
+       - 修正 warmup_kernels 中缺失 bias_L/bias_R 定義的錯誤。
+       - 確保 Warmup 階段正確模擬邊界條件。
+    2. [Physics] Dynamic Trap (Tanh Model):
+       - 引入 phi-dependent trap: rho = q * Amp * tanh((phi - off)/w).
+       - 產生正的 Jacobian 對角項 (positive feedback)，對抗 Poisson 的穩定性。
+    3. [Experiment] Structural Kill Sweep:
+       - 掃描 Q_tanh_amp: 1e21, 1e22, 5e22 (尋找 Jacobian 結構崩潰點)。
+    4. [Telemetry] New Diagnostics:
+       - 記錄 diag_tanh_max (正反饋強度)。
 """
 
 import os
@@ -71,16 +73,16 @@ GRID_LIST = [
 # [Stress Axis 2] Baseline Step Size
 BASELINE_STEP_LIST = [0.2]
 
-# [v1.4.6-032] Q_trap Sweep List
-Q_TRAP_LEVELS = [1.0e20, 3.0e20, 1.0e21]
+# [v1.4.6-033] Tanh Trap Sweep List
+# Challenge level: 1e21 to 5e22 to counteract Poisson diag (~5000-17000)
+Q_TANH_LEVELS = [1.0e21, 1.0e22, 5.0e22] 
 
 # Case Construction
 SCAN_PARAMS = []
-for qt in Q_TRAP_LEVELS:
-    # Use log-style tag to avoid '+' in filename
+for qt in Q_TANH_LEVELS:
     log_q = int(np.log10(qt))
-    tag = f"C4_Q1e{log_q}"
-    if abs(qt - 3e20) < 1e18: tag = f"C4_Q3e{log_q}" 
+    tag = f"C4_Tanh1e{log_q}"
+    if abs(qt - 5e22) < 1e20: tag = f"C4_Tanh5e{log_q}"
     
     SCAN_PARAMS.append({
         'CaseID': tag, 
@@ -88,7 +90,11 @@ for qt in Q_TRAP_LEVELS:
         'N_high': 1e17, 
         'N_low': 1e13, 
         'BiasMax': 12.0, 
-        'Q_trap': qt, 
+        'Q_trap': 0.0, # Base static trap off
+        'Q_tanh_amp': qt,
+        'Q_tanh_offset': 6.0, 
+        'Q_tanh_offset_anchor': 0.0, # Center at 0V for max derivative at Anchor
+        'Q_tanh_width': 1.0,
         'Alpha': 0.00, 
         'RelayBias': 12.0, 
         'A1_Step': 0.05
@@ -111,7 +117,6 @@ BASELINE_DIAG_PARAMS = {
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
-# [v1.4.6-032] Restored A1_PARAMS for Warmup Compatibility
 A1_PARAMS = {
     'gmres_tol': 1e-1, 'gmres_maxiter': 30, 'gmres_restart': 5,
     'dt_reset': False, 'max_outer_iter': 50,
@@ -136,7 +141,7 @@ A1_BOOT_PARAMS = {
 }
 
 # ============================================================================
-# 1. Kernels (JIT) - Standard Operators
+# 1. Kernels (JIT) - Tanh Trap Enabled
 # ============================================================================
 @jit
 def harmonic_mean(e1, e2): return 2.0 * e1 * e2 / (e1 + e2 + 1e-300)
@@ -152,10 +157,13 @@ def reconstruct_phi(phi_in, bias_L, bias_R, nx, ny):
     phi = phi.at[-1, :].set(phi[-2, :])
     return phi
 
-@partial(jit, static_argnums=(9, 10))
-def internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
+# [v1.4.6-033] Updated signature for Tanh Trap
+@partial(jit, static_argnums=(12, 13)) 
+def internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
     phi = reconstruct_phi(phi_in, bias_L, bias_R, nx, ny)
     p_c = phi[1:-1, 1:-1]
+    
+    # Flux
     p_l = phi[1:-1, :-2]; p_r = phi[1:-1, 2:]
     p_u = phi[:-2, 1:-1]; p_d = phi[2:, 1:-1]
     e_c = eps_map[1:-1, 1:-1]
@@ -166,47 +174,61 @@ def internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map
     flux_l = harmonic_mean(e_c, e_l) * (p_c - p_l) / dx
     flux_d = harmonic_mean(e_c, e_d) * (p_d - p_c) / dy
     flux_u = harmonic_mean(e_c, e_u) * (p_c - p_u) / dy
-    
     div_flux = (flux_r - flux_l)/dx + (flux_d - flux_u)/dy
     
+    # Free Charge
     rho_free = q * (ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) - jnp.exp(p_c/Vt)) + N_dop[1:-1, 1:-1])
-    rho_trap = q * Q_trap_map[1:-1, 1:-1]
     
-    return (div_flux + rho_free + rho_trap).flatten()
+    # Static Trap
+    rho_static = q * Q_trap_map[1:-1, 1:-1]
+    
+    # [v1.4.6-033] Dynamic Tanh Trap
+    rho_dyn = q * Q_tanh_map[1:-1, 1:-1] * jnp.tanh((p_c - tanh_off) / tanh_w)
+    
+    return (div_flux + rho_free + rho_static + rho_dyn).flatten()
 
-@partial(jit, static_argnums=(9, 10))
-def merit_loss(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
-    res = internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny)
+@partial(jit, static_argnums=(12, 13))
+def merit_loss(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
+    res = internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny)
     return 0.5 * jnp.sum(res**2)
 
-compute_grad_merit = jit(grad(merit_loss, argnums=0), static_argnums=(9, 10))
-
-@partial(jit, static_argnums=(9, 10))
-def get_diag_precond(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
+@partial(jit, static_argnums=(12, 13))
+def get_diag_precond(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
     phi = reconstruct_phi(phi_in, bias_L, bias_R, nx, ny)
     p_c = phi[1:-1, 1:-1]
     e_c = eps_map[1:-1, 1:-1]
+    
     diag_pois = -2.0*e_c/(dx**2) - 2.0*e_c/(dy**2)
-    term = -(q / Vt) * ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) + jnp.exp(p_c/Vt))
-    return (diag_pois + term).flatten()
+    diag_free = -(q / Vt) * ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) + jnp.exp(p_c/Vt))
+    
+    # [v1.4.6-033] Tanh Trap Derivative (POSITIVE contribution)
+    tanh_val = jnp.tanh((p_c - tanh_off) / tanh_w)
+    diag_tanh = (q * Q_tanh_map[1:-1, 1:-1] / tanh_w) * (1.0 - tanh_val**2)
+    
+    return (diag_pois + diag_free + diag_tanh).flatten()
 
-@partial(jit, static_argnums=(9, 10))
-def get_diag_components(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
+@partial(jit, static_argnums=(12, 13))
+def get_diag_components(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
     phi = reconstruct_phi(phi_in, bias_L, bias_R, nx, ny)
     p_c = phi[1:-1, 1:-1]
     e_c = eps_map[1:-1, 1:-1]
+    
     diag_pois = -2.0*e_c/(dx**2) - 2.0*e_c/(dy**2)
-    term = -(q / Vt) * ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) + jnp.exp(p_c/Vt))
-    return diag_pois.flatten(), term.flatten()
+    diag_free = -(q / Vt) * ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) + jnp.exp(p_c/Vt))
+    
+    tanh_val = jnp.tanh((p_c - tanh_off) / tanh_w)
+    diag_tanh = (q * Q_tanh_map[1:-1, 1:-1] / tanh_w) * (1.0 - tanh_val**2)
+    
+    return diag_pois.flatten(), diag_free.flatten(), diag_tanh.flatten()
 
-@partial(jit, static_argnums=(10, 11)) 
-def matvec_op_baseline(v, phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
-    _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny), (phi_in,), (v,))
+@partial(jit, static_argnums=(13, 14)) 
+def matvec_op_baseline(v, phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
+    _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny), (phi_in,), (v,))
     return Jv
 
-@partial(jit, static_argnums=(12, 13)) 
-def matvec_op_a1(v, phi_in, dt_inv, M_inv, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
-    _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny), (phi_in,), (v,))
+@partial(jit, static_argnums=(15, 16)) 
+def matvec_op_a1(v, phi_in, dt_inv, M_inv, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
+    _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny), (phi_in,), (v,))
     Av = v * dt_inv - Jv 
     return M_inv * Av    
 
@@ -250,7 +272,8 @@ class BaselineNewton:
                            phi_in=phi, bias_L=bias_L, bias_R=bias_R, 
                            eps_map=physics_args[0], N_dop=physics_args[1], ni_map=physics_args[2],
                            Q_trap_map=physics_args[3], 
-                           dx=physics_args[4], dy=physics_args[5], 
+                           Q_tanh_map=physics_args[4], tanh_off=physics_args[5], tanh_w=physics_args[6],
+                           dx=physics_args[7], dy=physics_args[8], 
                            nx=nx, ny=ny)
             
             RHS = -res 
@@ -351,7 +374,8 @@ class KounA1Solver:
                                  bias_L=bias_L, bias_R=bias_R, 
                                  eps_map=physics_args[0], N_dop=physics_args[1], ni_map=physics_args[2],
                                  Q_trap_map=physics_args[3], 
-                                 dx=physics_args[4], dy=physics_args[5], 
+                                 Q_tanh_map=physics_args[4], tanh_off=physics_args[5], tanh_w=physics_args[6],
+                                 dx=physics_args[7], dy=physics_args[8], 
                                  nx=nx, ny=ny)
             
             RHS = M_inv * res 
@@ -456,7 +480,12 @@ def setup_materials(X, Y, params):
     ni_map = mask_si * ni_phys + mask_vac * ni_vac
     Q_trap_vol = params.get('Q_trap', 0.0)
     Q_trap_map = mask_vac * Q_trap_vol
-    return eps_map, N_dop, ni_map, Q_trap_map
+    
+    # [v1.4.6-033] Tanh Trap Map (Amplitude Mask)
+    Q_tanh_amp = params.get('Q_tanh_amp', 0.0)
+    Q_tanh_map = mask_vac * Q_tanh_amp
+    
+    return eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map
 
 def setup_grid(nx, ny):
     dx = Lx / (nx - 1); dy = Ly / (ny - 1)
@@ -483,7 +512,9 @@ def warmup_kernels():
         for p_idx, params in enumerate(SCAN_PARAMS):
             start_case = time.time()
             X, Y, dx, dy = setup_grid(nx_i, ny_i)
-            eps_map, N_dop, ni_map, Q_trap_map = setup_materials(X, Y, params)
+            # Update unpack
+            eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map = setup_materials(X, Y, params)
+            
             phi_bc_L = Vt * jnp.log(params['N_high']/ni_bc)
             phi_bc_R_phys = Vt * jnp.log(params['N_low']/ni_bc)
             alpha = params.get('Alpha', 0.0)
@@ -492,59 +523,39 @@ def warmup_kernels():
             phi_row = phi_bc_L * (1.0 - x_lin) + phi_bc_R_phys * x_lin
             phi_full = jnp.tile(phi_row, (ny_i, 1))
             phi_init = phi_full[1:-1, 1:-1].flatten()
-            relay_target = params['RelayBias']
-            bias_mv_set = {0, int(round(relay_target * 1000))}
-            for step_val in BASELINE_STEP_LIST:
-                k = int(np.floor(relay_target / step_val + 1e-9))
-                snapped_val = k * step_val
-                bias_mv_set.add(int(round(snapped_val * 1000)))
-            warmup_biases = sorted([mv / 1000.0 for mv in bias_mv_set])
-            print(f" [Biases: {['{:.3f}'.format(b) for b in warmup_biases]}] ", end="")
-            for w_bias in warmup_biases:
-                bias_L = phi_bc_L
-                bias_R = phi_bc_R_base + w_bias
-                res = internal_residual(phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
-                res.block_until_ready()
-                d_p, d_t = get_diag_components(phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
-                d_p.block_until_ready()
-                diag_J = get_diag_precond(phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
-                diag_J.block_until_ready()
-                
-                # Warmup Standard A1
-                M_diag = dt_inv - diag_J 
-                M_inv = 1.0 / (M_diag + 1e-12)
-                M_inv.block_until_ready()
-                v_dummy = jnp.ones_like(phi_init)
-                v_dummy.block_until_ready() 
-                mv_b = matvec_op_baseline(v_dummy, phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
-                mv_b.block_until_ready()
-                
-                mv_a = matvec_op_a1(v_dummy, phi_init, dt_inv, M_inv, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
-                mv_a.block_until_ready()
-                
-                res_norm = jnp.linalg.norm(res) + 1e-300
-                target_norm = 1e-3
-                rhs_probe = res * (target_norm / res_norm)
-                A_op_base = partial(matvec_op_baseline, phi_in=phi_init, bias_L=bias_L, bias_R=bias_R, eps_map=eps_map, N_dop=N_dop, ni_map=ni_map, Q_trap_map=Q_trap_map, dx=dx, dy=dy, nx=nx_i, ny=ny_i)
-                g_base = BASELINE_PARAMS
-                safe_run_gmres("Baseline", gmres, A_op_base, -rhs_probe, tol=g_base['gmres_tol'], maxiter=g_base['gmres_maxiter'], restart=g_base['gmres_restart'])
-                
-                A_op_a1 = partial(matvec_op_a1, phi_in=phi_init, dt_inv=dt_inv, M_inv=M_inv, bias_L=bias_L, bias_R=bias_R, eps_map=eps_map, N_dop=N_dop, ni_map=ni_map, Q_trap_map=Q_trap_map, dx=dx, dy=dy, nx=nx_i, ny=ny_i)
-                g_a1 = A1_PARAMS
-                rhs_probe_a1 = M_inv * rhs_probe
-                safe_run_gmres("A1-Std", gmres, A_op_a1, rhs_probe_a1, tol=g_a1['gmres_tol'], maxiter=g_a1['gmres_maxiter'], restart=g_a1['gmres_restart'])
-                
-                res_norm_val = float(jnp.linalg.norm(res))
-                bias_R_probe = bias_R
-                if res_norm_val <= 15.0: 
-                    bias_R_probe = phi_bc_R_base + params['BiasMax'] + 1.0
-                physics_args = (eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
-                dummy_solver = KounA1Solver(A1_PARAMS)
-                try:
-                    dummy_solver.solve_step(phi_init, bias_L, bias_R_probe, 1e-4, physics_args, step_time_limit=0.5)
-                except Exception as e:
-                    print(f"    [Warmup Warning] Solver-Branch skipped: {e}")
+            
+            # Extract tanh params
+            tanh_off = params.get('Q_tanh_offset_anchor', 0.0)
+            tanh_w = params.get('Q_tanh_width', 1.0)
+            
+            physics_args = (eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx_i, ny_i)
+            
+            # [v1.4.6-033 Fix] Define bias_L and bias_R
+            bias_L = phi_bc_L
+            bias_R = phi_bc_R_base # No w_bias loop here, just base for warmup
+            
+            # Warmup Residual
+            res = internal_residual(phi_init, bias_L, bias_R, *physics_args)
+            res.block_until_ready()
+            
+            # Warmup Diag
+            d_p, d_t, d_tanh = get_diag_components(phi_init, bias_L, bias_R, *physics_args)
+            d_p.block_until_ready()
+            
+            # Warmup Solvers
+            M_diag = dt_inv - get_diag_precond(phi_init, bias_L, bias_R, *physics_args)
+            M_inv = 1.0 / (M_diag + 1e-12)
+            M_inv.block_until_ready()
+            v_dummy = jnp.ones_like(phi_init)
+            
+            mv_b = matvec_op_baseline(v_dummy, phi_init, bias_L, bias_R, *physics_args)
+            mv_b.block_until_ready()
+            
+            mv_a = matvec_op_a1(v_dummy, phi_init, dt_inv, M_inv, bias_L, bias_R, *physics_args)
+            mv_a.block_until_ready()
+            
             print(f" Done ({time.time()-start_case:.2f}s)")
+            break # Warmup one case is usually enough if shapes match
     print(">>> JIT WARMUP COMPLETE.\n")
 
 def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_bias, init_phi=None, capture_k=None, relay_meta=None, a1_span=None, solver_params=None):
@@ -559,8 +570,16 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     print(f"  > [{solver_type}] Grid={grid_cfg['Tag']}({nx}x{ny}), Step={step_val_log}V, Range={start_bias:.2f}->...", end="")
     
     X, Y, dx, dy = setup_grid(nx, ny)
-    eps_map, N_dop, ni_map, Q_trap_map = setup_materials(X, Y, params)
-    physics_args = (eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny)
+    # Update unpack
+    eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map = setup_materials(X, Y, params)
+    
+    # Extract tanh params
+    tanh_off = params.get('Q_tanh_offset_anchor', 0.0)
+    tanh_w = params.get('Q_tanh_width', 1.0)
+    
+    # Pack new physics args
+    physics_args = (eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny)
+    
     phi_bc_L = Vt * jnp.log(params['N_high']/ni_bc)
     phi_bc_R_phys = Vt * jnp.log(params['N_low']/ni_bc)
     alpha = params.get('Alpha', 0.0)
@@ -591,16 +610,14 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     
     step_val = base_step if 'Baseline' in solver_type else params['A1_Step'] 
     
-    # [v1.4.6-031] Zero-Bias Focus (Single Point)
+    # [v1.4.6-033] Zero-Bias Focus
     bias_points = []
     
     if 'A1' in solver_type:
-        # Just Anchor 0.0
         k_start = int(np.round(start_bias / step_val))
         print(f" (Anchor Only: 0.0V)")
         bias_points.append((k_start, k_start*step_val, 0.0))
     else:
-        # Just Anchor 0.0
         k_curr = 0
         bias_points.append((k_curr, k_curr * step_val, 0.0))
         print(f" (Anchor Only: 0.0V)")
@@ -620,7 +637,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         start = time.time()
         is_first_step = (step_idx == 0)
         
-        # [v1.4.6-031] Explicit Budget Trigger
+        # [v1.4.6-033] Explicit Budget Trigger
         budget = MAX_STEP_TIME_ANCHOR
         
         dt_before = float(current_dt) if 'A1' in solver_type else 0.0
@@ -689,7 +706,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'a1_step': a1_counts.get('step', 0),
             'a1_noise': a1_counts.get('noise', 0),
             'a1_sniper': a1_counts.get('sniper', 0),
-            'a1_force_step': a1_counts.get('force_step', 0), # [v1.4.6-030] New Field
+            'a1_force_step': a1_counts.get('force_step', 0), 
             'last_gmres_info': last_gmres, 
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
             'g_tol': g_params[0], 'g_max': g_params[1], 'g_rst': g_params[2],
@@ -706,8 +723,10 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             log_max_exp = max_abs_phi_inner / Vt
             arg_clipped = min(log_max_exp, 700.0)
             max_exp_val = float(np.exp(arg_clipped))
-            d_pois, d_term = get_diag_components(phi_next, phi_bc_L, bc_R, *physics_args)
-            d_total = d_pois + d_term
+            
+            d_pois, d_free, d_tanh = get_diag_components(phi_next, phi_bc_L, bc_R, *physics_args)
+            d_total = d_pois + d_free + d_tanh
+            
             row['phi_full_min'] = p_min
             row['phi_full_max'] = p_max
             row['log_max_exp_inner'] = log_max_exp 
@@ -717,10 +736,11 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             row['diag_J_med'] = float(jnp.median(d_total)) 
             row['diag_pois_min'] = float(jnp.min(d_pois))
             row['diag_pois_max'] = float(jnp.max(d_pois))
-            row['diag_term_min'] = float(jnp.min(d_term))
-            row['diag_term_max'] = float(jnp.max(d_term))
+            row['diag_term_min'] = float(jnp.min(d_free)) 
+            row['diag_term_max'] = float(jnp.max(d_free))
+            row['diag_tanh_max'] = float(jnp.max(d_tanh)) # [v1.4.6-033] New
+            
             if 'A1' in solver_type:
-                # [v1.4.6-030] Standard Diag
                 if dt_before > 0:
                     m_diag_b = (1.0/dt_before) - d_total 
                     row['M_diag_min_before'] = float(jnp.min(m_diag_b))
@@ -762,7 +782,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-032 (UNCONDITIONAL AUTOPSY & ZERO-BIAS SWEEP - FIXED) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-033 (STRUCTURAL NON-MONOTONICITY TRAP - FIXED) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s (Focus on 0.0V)")
@@ -773,7 +793,7 @@ def main():
             
             for params in SCAN_PARAMS:
                 case_id = params['CaseID']
-                print(f"  > Case: {case_id} (Q_trap={params['Q_trap']:.1e})")
+                print(f"  > Case: {case_id} (Q_tanh_amp={params['Q_tanh_amp']:.1e})")
                 
                 relay_target = params['RelayBias']
                 relay_k = int(np.floor(relay_target / base_step + 1e-9))
@@ -788,7 +808,7 @@ def main():
                     'relay_type': 'TARGET' 
                 }
                 
-                # [Strategy v1.4.6-031] Unconditional Autopsy First (The "Real" Baseline)
+                # Unconditional Autopsy First 
                 print(f"    [Strategy] Baseline Diag Check (0.0V, 100 iters)...")
                 df_diag, last_phi_base, _, diag_reason, _, _ = run_sweep_stress(
                     params, grid_cfg, base_step, 'Baseline_Diag',
@@ -820,17 +840,7 @@ def main():
                     'relay_delta': snap_delta
                 })
 
-                # [Strategy v1.4.6-031] A1 Challenge (Only if Baseline failed, or for comparison)
-                # We run A1 regardless to see if it survives where Baseline died, or just to compare.
-                
-                is_bootstrap_needed = (base_status != "CONVERGED")
-                
-                # Setup A1 run (using Diag result as init if converged, else cold start?)
-                # Actually, A1 Bootstrap usually implies starting from scratch or the same init guess as Baseline.
-                # We use the same init logic (ramp) inside run_sweep_stress if init_phi is None.
-                # But here we want to test "Self-Start", so we pass None (or handle inside).
-                # run_sweep_stress generates ramp if init_phi is None.
-                
+                # A1 Challenge 
                 print(f"    [Strategy] A1 Bootstrap Check (0.0V)...")
                 
                 relay_meta_boot = relay_meta.copy()
@@ -869,10 +879,10 @@ def main():
 
                 gc.collect()
 
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-032_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-032_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-033_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-033_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-032_FullLog.csv, Stress_v1.4.6-032_Summary.csv")
+    print("Saved: Stress_v1.4.6-033_FullLog.csv, Stress_v1.4.6-033_Summary.csv")
 
 if __name__ == "__main__":
     main()

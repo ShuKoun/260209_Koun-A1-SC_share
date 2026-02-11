@@ -1,0 +1,44 @@
+--- Environment Hardening Applied ---
+XLA_FLAGS: --xla_gpu_enable_command_buffer=
+MEM_FRACTION: .35
+-------------------------------------
+[15:09:29] JAX Device Check: [cuda(id=0)]
+SUCCESS: JAX is running on GPU.
+
+>>> JIT WARMUP: Compiling Isomorphic Operators for all Grids & Cases...
+  [Warmup Grid] MegaUltra2 (640x320)... Done (0.67s)
+>>> JIT WARMUP COMPLETE.
+
+=== BENCHMARK S: STRESS HARNESS v1.4.6-033 (STRUCTURAL NON-MONOTONICITY TRAP - FIXED) ===
+Grid List: ['MegaUltra2']
+Step List: [0.2]
+Time Budget: Anchor=240.0s (Focus on 0.0V)
+
+>>> Stress Group: MegaUltra2 | Step=0.2V
+  > Case: C4_Tanh1e21 (Q_tanh_amp=1.0e+21)
+    [Strategy] Baseline Diag Check (0.0V, 100 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Anchor Only: 0.0V)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] A1 Result: FAIL (MAX_ITER)
+  > Case: C4_Tanh1e22 (Q_tanh_amp=1.0e+22)
+    [Strategy] Baseline Diag Check (0.0V, 100 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Anchor Only: 0.0V)
+    !!! FAILED at 0.00V (DT_COLLAPSE)
+    [Strategy] A1 Result: FAIL (DT_COLLAPSE)
+  > Case: C4_Tanh5e22 (Q_tanh_amp=5.0e+22)
+    [Strategy] Baseline Diag Check (0.0V, 100 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Anchor Only: 0.0V)
+    !!! FAILED at 0.00V (DT_COLLAPSE)
+    [Strategy] A1 Result: FAIL (DT_COLLAPSE)
+
+=== STRESS TEST COMPLETE ===
+Saved: Stress_v1.4.6-033_FullLog.csv, Stress_v1.4.6-033_Summary.csv
