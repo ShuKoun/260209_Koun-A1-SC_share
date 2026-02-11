@@ -1,0 +1,5 @@
+case_id,grid,base_step,solver,max_bias,fail_reason,fail_class,total_time,relay_target,relay_bias_baseline_snapped,relay_delta,relay_type
+C4_Hard,MegaUltra2,0.2,Baseline,,MAX_ITER,NUMERIC_FAIL,21.23936176300049,12.0,12.0,0.0,
+C4_Hard,MegaUltra2,0.2,A1,0.0,MAX_ITER,BOOTSTRAP_FAIL,61.436283826828,,,,BOOTSTRAP_ANCHOR
+C4_Hard,MegaUltra2,0.4,Baseline,,MAX_ITER,NUMERIC_FAIL,20.82968258857727,12.0,12.0,0.0,
+C4_Hard,MegaUltra2,0.4,A1,0.0,MAX_ITER,BOOTSTRAP_FAIL,54.96154999732971,,,,BOOTSTRAP_ANCHOR

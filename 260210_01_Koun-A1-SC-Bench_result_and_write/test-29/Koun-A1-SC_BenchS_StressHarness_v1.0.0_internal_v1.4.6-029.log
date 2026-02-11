@@ -1,0 +1,46 @@
+--- Environment Hardening Applied ---
+XLA_FLAGS: --xla_gpu_enable_command_buffer=
+MEM_FRACTION: .35
+-------------------------------------
+[13:59:38] JAX Device Check: [cuda(id=0)]
+SUCCESS: JAX is running on GPU.
+
+>>> JIT WARMUP: Compiling Isomorphic Operators for all Grids & Cases...
+  [Warmup Grid] MegaUltra2 (640x320)... [Biases: ['0.000', '12.000']]  Done (5.18s)
+>>> JIT WARMUP COMPLETE.
+
+=== BENCHMARK S: STRESS HARNESS v1.4.6-029 (PHYSICS HARDENING & LOGIC CONSOLIDATION) ===
+Grid List: ['MegaUltra2']
+Step List: [0.2, 0.4]
+Time Budget: Anchor=240.0s, Normal=30.0s
+
+>>> Stress Group: MegaUltra2 | Step=0.2V
+  # RelaySnap: Target=12.0V -> 12.00V (Step 0.2V, Delta 0.00e+00V)
+  > [Baseline] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->...12.00V (K-Space C2F)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] Baseline Autopsy: Retrying 0.0V with 100 iters...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->...0.00V (K-Space C2F)
+    [Strategy] Autopsy Result: CONVERGED (NONE)
+    [Strategy] A1 BOOTSTRAP OVERRIDE ACTIVATED.
+    Baseline died at start. Attempting A1 self-start.
+    [Strategy] Step 1: A1 Anchor Check at 0.0V...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] Anchor FAILED.
+
+>>> Stress Group: MegaUltra2 | Step=0.4V
+  # RelaySnap: Target=12.0V -> 12.00V (Step 0.4V, Delta 0.00e+00V)
+  > [Baseline] Grid=MegaUltra2(640x320), Step=0.4V, Range=0.00->...12.00V (K-Space C2F)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] Baseline Autopsy: Retrying 0.0V with 100 iters...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.4V, Range=0.00->...0.00V (K-Space C2F)
+    [Strategy] Autopsy Result: CONVERGED (NONE)
+    [Strategy] A1 BOOTSTRAP OVERRIDE ACTIVATED.
+    Baseline died at start. Attempting A1 self-start.
+    [Strategy] Step 1: A1 Anchor Check at 0.0V...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Sprint: 0 steps)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] Anchor FAILED.
+
+=== STRESS TEST COMPLETE ===
+Saved: Stress_v1.4.6-029_FullLog.csv, Stress_v1.4.6-029_Summary.csv
