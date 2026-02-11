@@ -1,18 +1,18 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-018.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-018 (結構診斷: 剛性探針 - 語義精確版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-018 (Structural Diagnosis: Rigidity Probe - Semantic Precision)
-版本號 (Version): Harness v1.4.6-018
-前置版本 (Prev Version): Harness v1.4.6-017
+文件名 (Filename): BenchS_StressHarness_v1.4.6-019.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-019 (結構破壞: 幾何穿刺 - Puncture)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-019 (Structure Breaking: Geometry Puncture)
+版本號 (Version): Harness v1.4.6-019
+前置版本 (Prev Version): Harness v1.4.6-018
 
 變更日誌 (Changelog):
-    1. [Strategy] 結構診斷 (Phase Diagnosis)：
-       保持 v1.4.6-017 的物理與離散設定（MegaUltra2, C4 Only, SlotW=0.5）。
-    2. [Feature] 診斷探針 (Diagnostic Probe - Final Polish):
-       - Field Names: 明確區分 phi_full (含邊界) 與 inner (內點) 統計。
-       - DT Snapshots: 記錄 dt_before (步前) 與 dt_after (步後)，消除動態步長帶來的分析歧義。
-       - Stability Margin: 同時計算 M_diag_min_before 與 M_diag_min_after，提供雙重驗證。
-    3. [Invariant] 參數與邏輯鎖定：Solver 與 Harness 主邏輯嚴格不變。
+    1. [Strategy] 結構性破壞 (Phase Structure-Breaking)：
+       基於 v018 診斷（屏蔽效應主導），實施幾何穿刺以打破電勢鉗制。
+    2. [Modification] 全貫穿槽 (Full Puncture)：
+       在 setup_materials 中，將 slot_h 強制設定為 Ly * 2.0 (大於器件高度)。
+       這消除了槽上下的矽通道，強制高壓差直接跨越 0.5nm 的真空隙。
+    3. [Invariant] 繼承 v018：
+       保持 MegaUltra2 網格、C4 Only 參數、以及完整的結構診斷探針 (Probe)。
 """
 
 import os
@@ -59,7 +59,7 @@ ni = 1.0e10; ni_vac = 1.0e-20
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-018] Inherit MegaUltra2 (3-Cell Threshold)
+# [v1.4.6-019] Inherit MegaUltra2 (High Resolution)
 GRID_LIST = [
     {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
@@ -67,15 +67,16 @@ GRID_LIST = [
 # [Stress Axis 2] Baseline Step Size
 BASELINE_STEP_LIST = [0.2, 0.4]
 
-# Case Definition (Physics identical to v1.7.12)
+# Case Definition
 SCAN_PARAMS = [
-    # [v1.4.6-018] C4 Only (Inherited)
+    # [v1.4.6-019] C4 Only (Inherited + Puncture via setup_materials)
+    # SlotW=0.5nm, BiasMax=12.0V, Q_trap=3e19
     {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
 MAX_STEP_TIME_FIRST = 60.0  
-MAX_STEP_TIME_NORMAL = 30.0 # Standard budget
+MAX_STEP_TIME_NORMAL = 30.0 
 
 # [Algo] Coarse-to-Fine Constants
 COARSE_STRIDE = 5 
@@ -95,7 +96,7 @@ A1_PARAMS = {
 }
 
 # ============================================================================
-# 1. Kernels (JIT) - Identical to v1.7.12
+# 1. Kernels (JIT) - Identical to v1.7.12 (Probe Enabled)
 # ============================================================================
 @jit
 def harmonic_mean(e1, e2): return 2.0 * e1 * e2 / (e1 + e2 + 1e-300)
@@ -149,7 +150,7 @@ def get_diag_precond(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map,
     term = -(q / Vt) * ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) + jnp.exp(p_c/Vt))
     return (diag_pois + term).flatten()
 
-# [v1.4.6-018 Probe] Split Diagnostics
+# Probe Diagnostic Kernel
 @partial(jit, static_argnums=(9, 10))
 def get_diag_components(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
     phi = reconstruct_phi(phi_in, bias_L, bias_R, nx, ny)
@@ -361,7 +362,10 @@ class KounA1Solver:
 # ============================================================================
 def setup_materials(X, Y, params):
     slot_w = params['SlotW_nm'] * 1e-7 
-    slot_h = 30.0 * 1e-7 
+    # [v1.4.6-019] Geometry Puncture: Force Through-Wafer Slot
+    # Old: slot_h = 30.0 * 1e-7 
+    slot_h = Ly * 2.0 # Full Puncture Mode
+    
     y_center = 0.7 * Ly 
     mask_vac = (jnp.abs(X - Lx/2) < slot_w/2) & (jnp.abs(Y - y_center) < slot_h/2)
     mask_vac = mask_vac.astype(jnp.float64)
@@ -398,7 +402,7 @@ def warmup_kernels():
     
     for grid_cfg in GRID_LIST:
         nx, ny = grid_cfg['Nx'], grid_cfg['Ny']
-        nx_i, ny_i = int(nx), int(ny) # [v1.4.6-013 Hotfix Applied]
+        nx_i, ny_i = int(nx), int(ny) 
         print(f"  [Warmup Grid] {grid_cfg['Tag']} ({nx_i}x{ny_i})...", end="")
         
         for p_idx, params in enumerate(SCAN_PARAMS):
@@ -775,7 +779,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-018 (STRUCTURAL DIAGNOSIS: RIGIDITY PROBE - C4 ONLY) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-019 (STRUCTURE BREAKING: PUNCTURE - C4 ONLY) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -922,10 +926,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-018_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-018_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-019_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-019_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-018_FullLog.csv, Stress_v1.4.6-018_Summary.csv")
+    print("Saved: Stress_v1.4.6-019_FullLog.csv, Stress_v1.4.6-019_Summary.csv")
 
 if __name__ == "__main__":
     main()
