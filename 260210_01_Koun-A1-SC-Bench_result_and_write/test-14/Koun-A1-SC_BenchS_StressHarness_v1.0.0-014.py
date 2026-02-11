@@ -1,16 +1,16 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-013.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-013 (偏壓域擴展 B4: 12V 極限 - Hotfix)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-013 (Bias Ceiling Extension B4: 12V Limit - Hotfix)
-版本號 (Version): Harness v1.4.6-013
-前置版本 (Prev Version): Harness v1.4.6-012
+文件名 (Filename): BenchS_StressHarness_v1.4.6-014.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-014 (離散敏感性驗證: Ultra Grid)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-014 (Grid Sensitivity Validation: Ultra Grid)
+版本號 (Version): Harness v1.4.6-014
+前置版本 (Prev Version): Harness v1.4.6-013
 
 變更日誌 (Changelog):
-    1. [Strategy] 偏壓域擴展 (B4)：將 Case C4 的 BiasMax 與 RelayBias 從 8.0V 提升至 12.0V。
-       目標：在幾何 (1.0nm)、電荷 (3e19) 與不對稱性 (Alpha=0.00) 均已鎖定極限的前提下，
-       通過指數級擴展電壓域，試圖觸發 Poisson-Boltzmann 方程的指數項爆炸。
-    2. [Fix] 修復 v1.4.6-013 初始版在 warmup_kernels 中的語法回歸錯誤。
-    3. [Invariant] 參數鎖定：保持 SlotW=1.0、Q_trap=3.0e19、Alpha=0.00 不變。
+    1. [Strategy] Phase V - 離散敏感性驗證 (GridProbe-Ultra)：
+       在 GRID_LIST 中新增 {'Nx': 240, 'Ny': 120, 'Tag': 'Ultra'}。
+       目標：驗證 Baseline 的"不死之身"是否源於網格過粗導致的梯度平滑效應。
+    2. [Invariant] 參數鎖定：保持 C4 的 BiasMax=12.0, RelayBias=12.0, SlotW=1.0, Q_trap=3e19, Alpha=0.00 不變。
+    3. [Invariant] 架構繼承：完全繼承 v1.4.6-013 的代碼邏輯 (含 warmup fix)。
 """
 
 import os
@@ -57,9 +57,11 @@ ni = 1.0e10; ni_vac = 1.0e-20
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
+# [v1.4.6-014] Phase V: Added Ultra Grid
 GRID_LIST = [
     {'Nx': 120, 'Ny': 60,  'Tag': 'Std'},   # Standard
-    {'Nx': 180, 'Ny': 90,  'Tag': 'Dense'}  # 1.5x Density
+    {'Nx': 180, 'Ny': 90,  'Tag': 'Dense'}, # 1.5x Density
+    {'Nx': 240, 'Ny': 120, 'Tag': 'Ultra'}  # 2.0x Density (New Validation Axis)
 ]
 
 # [Stress Axis 2] Baseline Step Size
@@ -74,7 +76,7 @@ SCAN_PARAMS = [
     {'CaseID': 'C3', 'SlotW_nm': 2.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 1.0e18, 'Alpha': 0.2, 'RelayBias': 4.0, 'A1_Step': 0.05},
 
     # [Case 4] The Wall (Extreme Physics)
-    # [v1.4.6-013] Bias Ceiling B4: BiasMax/RelayBias -> 12.0V
+    # [v1.4.6-013/014] Bias Ceiling B4: BiasMax/RelayBias -> 12.0V
     # SlotW=1.0nm (B1), Q_trap=3.0e19 (B2-Extreme), Alpha=0.00 (B3-Extreme) -> Multi-Dimension Stress
     {'CaseID': 'C4', 'SlotW_nm': 1.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
@@ -394,7 +396,7 @@ def warmup_kernels():
     
     for grid_cfg in GRID_LIST:
         nx, ny = grid_cfg['Nx'], grid_cfg['Ny']
-        nx_i, ny_i = int(nx), int(ny)
+        nx_i, ny_i = int(nx), int(ny) # [v1.4.6-013 Hotfix Applied]
         print(f"  [Warmup Grid] {grid_cfg['Tag']} ({nx_i}x{ny_i})...", end="")
         
         for p_idx, params in enumerate(SCAN_PARAMS):
@@ -693,7 +695,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-013 (BIAS CEILING B4) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-014 (GRID PROBE: ULTRA) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -840,10 +842,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-013_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-013_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-014_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-014_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-013_FullLog.csv, Stress_v1.4.6-013_Summary.csv")
+    print("Saved: Stress_v1.4.6-014_FullLog.csv, Stress_v1.4.6-014_Summary.csv")
 
 if __name__ == "__main__":
     main()
