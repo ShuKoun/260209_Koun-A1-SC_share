@@ -1,19 +1,19 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-029.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-029 (物理加固與邏輯重構)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-029 (Physics Hardening & Logic Consolidation)
-版本號 (Version): Harness v1.4.6-029
-前置版本 (Prev Version): Harness v1.4.6-028
+文件名 (Filename): BenchS_StressHarness_v1.4.6-030.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-030 (牛頓法致死區掃描)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-030 (Newton Kill Zone Sweep)
+版本號 (Version): Harness v1.4.6-030
+前置版本 (Prev Version): Harness v1.4.6-029
 
 變更日誌 (Changelog):
-    1. [Physics] Hardening:
-       - Q_trap 翻倍至 6.0e19 (原 3.0e19)。
-       - 目標：擊穿 Baseline (Newton) 的收斂盆地 (Basin of Attraction)，創造 "Newton Kill Zone"。
-    2. [Logic] A1 Consolidation:
-       - 移除 A/B 測試，回歸標準算子符號 (Matrix=-J, RHS=+res)。
-       - Force Step 邏輯優化：基於連續失敗次數 (Threshold=5) 觸發，並統一使用 max_abs 裁剪。
-    3. [Budget] Anchor Budget:
-       - 保持 Anchor 階段 240s 的寬裕預算。
+    1. [Experiment] Q_trap Sweep:
+       - 掃描範圍: 1e20, 3e20, 1e21 (尋找 Newton 的崩潰閾值)。
+       - 目標: 找到 Baseline_Diag (max_iter=100) 也無法收斂的物理強度。
+    2. [Telemetry] Force Step Logging:
+       - 新增 a1_force_step 字段，記錄 Force Step 觸發次數。
+       - 確保診斷數據完整性。
+    3. [Logic] Hardened Probe:
+       - 保持 Baseline 失敗後觸發 Baseline_Diag 的機制。
 """
 
 import os
@@ -68,14 +68,27 @@ GRID_LIST = [
     {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
 
-# [Stress Axis 2] Baseline Step Size
-BASELINE_STEP_LIST = [0.2, 0.4]
+# [Stress Axis 2] Baseline Step Size (Reduced to just 0.2 for sweep efficiency)
+BASELINE_STEP_LIST = [0.2]
 
-# Case Definition
-SCAN_PARAMS = [
-    # [v1.4.6-029] Physics Hardening: Q_trap = 6.0e19
-    {'CaseID': 'C4_Hard', 'SlotW_nm': 0.5, 'N_high': 1e17, 'N_low': 1e13, 'BiasMax': 12.0, 'Q_trap': 6.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
-]
+# [v1.4.6-030] Q_trap Sweep List
+Q_TRAP_LEVELS = [1.0e20, 3.0e20, 1.0e21]
+
+# Case Construction
+SCAN_PARAMS = []
+for qt in Q_TRAP_LEVELS:
+    tag = f"C4_Q{qt:.0e}"
+    SCAN_PARAMS.append({
+        'CaseID': tag, 
+        'SlotW_nm': 0.5, 
+        'N_high': 1e17, 
+        'N_low': 1e13, 
+        'BiasMax': 12.0, 
+        'Q_trap': qt, 
+        'Alpha': 0.00, 
+        'RelayBias': 12.0, 
+        'A1_Step': 0.05
+    })
 
 # [Ops] Adaptive Budgeting
 MAX_STEP_TIME_FIRST = 60.0  
@@ -96,7 +109,6 @@ BASELINE_DIAG_PARAMS = {
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
-# Standard A1 Params
 A1_PARAMS = {
     'gmres_tol': 1e-1, 'gmres_maxiter': 30, 'gmres_restart': 5,
     'dt_reset': False, 'max_outer_iter': 50,
@@ -107,7 +119,6 @@ A1_PARAMS = {
     'mode': 'NORMAL'
 }
 
-# Bootstrap Anchor Params
 A1_BOOT_PARAMS = {
     'gmres_tol': 3e-2,      
     'gmres_maxiter': 60,    
@@ -118,11 +129,11 @@ A1_BOOT_PARAMS = {
     'dt_max': 0.1,          
     'dt_growth_cap': 1.2,   
     'dt_shrink_noise': 0.5,
-    'mode': 'BOOT' # Trigger Extended Budget
+    'mode': 'BOOT'
 }
 
 # ============================================================================
-# 1. Kernels (JIT) - Standard Operators (Reverted to Base)
+# 1. Kernels (JIT) - Standard Operators
 # ============================================================================
 @jit
 def harmonic_mean(e1, e2): return 2.0 * e1 * e2 / (e1 + e2 + 1e-300)
@@ -190,11 +201,9 @@ def matvec_op_baseline(v, phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap
     _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny), (phi_in,), (v,))
     return Jv
 
-# [v1.4.6-029] Standard A1 Operator (Reverted)
 @partial(jit, static_argnums=(12, 13)) 
 def matvec_op_a1(v, phi_in, dt_inv, M_inv, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
     _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny), (phi_in,), (v,))
-    # A = dt_inv * I - J  (Standard)
     Av = v * dt_inv - Jv 
     return M_inv * Av    
 
@@ -290,7 +299,8 @@ class KounA1Solver:
         phi = phi_init
         
         cnt_step = 0; cnt_noise = 0; cnt_sniper = 0
-        cnt_consecutive_fail = 0 # [v1.4.6-029] Track fails
+        cnt_consecutive_fail = 0 
+        cnt_force_step = 0 # [v1.4.6-030] Force Step Counter
         
         start_time = time.time()
         t_lin = 0.0; t_ls = 0.0; t_res = 0.0
@@ -305,12 +315,12 @@ class KounA1Solver:
         norm = norm_init
         t_res += time.time() - t0
         
-        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
+        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'force_step':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
         captured_g_params = (self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart'])
 
         for k in range(self.params['max_outer_iter']):
             if time.time() - start_time > step_time_limit:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "TIMEOUT", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             if k > 0:
@@ -323,7 +333,7 @@ class KounA1Solver:
             
             if norm < 1e-4: 
                 rel = (norm_init - norm)/(norm_init+1e-12)
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, True, norm_init, norm, rel, k, f"CONV({cnt_step}/{cnt_noise}/{cnt_sniper})", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             t0 = time.time()
@@ -341,7 +351,7 @@ class KounA1Solver:
                                  dx=physics_args[4], dy=physics_args[5], 
                                  nx=nx, ny=ny)
             
-            RHS = M_inv * res # Standard +res
+            RHS = M_inv * res 
             
             tol_g, max_g, rst_g = self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart']
             captured_g_params = (tol_g, max_g, rst_g)
@@ -351,7 +361,7 @@ class KounA1Solver:
                 d.block_until_ready()
                 last_gmres_info = info
             except Exception as e:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "GMRES_EXCEPT", -1, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             t_lin += time.time() - t0
@@ -373,7 +383,7 @@ class KounA1Solver:
             
             if status != "FAIL":
                 phi = phi_next
-                cnt_consecutive_fail = 0 # Reset fail count
+                cnt_consecutive_fail = 0 
                 
                 rel_improve = (merit - merit_new) / (merit + 1e-12)
                 if status == "STEP":
@@ -390,13 +400,11 @@ class KounA1Solver:
             else:
                 cnt_consecutive_fail += 1
                 
-                # [v1.4.6-029] Force Step Logic (Consecutive Fail Based)
                 do_force_attempt = False
-                if cnt_consecutive_fail >= 5: # Threshold for force step
+                if cnt_consecutive_fail >= 5: 
                     do_force_attempt = True
                 
                 if do_force_attempt:
-                    # Attempt tiny step to check direction validity
                     alpha_force = 1e-4
                     step = alpha_force * d
                     if jnp.max(jnp.abs(step)) > 0.5: step *= (0.5 / jnp.max(jnp.abs(step)))
@@ -405,27 +413,25 @@ class KounA1Solver:
                     merit_force = float(merit_loss(phi_try, bias_L, bias_R, *physics_args))
                     
                     if merit_force < merit:
-                        # Gradient was correct, just too big or unlucky
                         status = "FORCE_STEP"
-                        phi = phi_try # Accept it
-                        cnt_step += 1 
-                        self.dt = dt_floor # Reset DT to floor to keep trying
+                        phi = phi_try 
+                        cnt_force_step += 1 # [v1.4.6-030] Log it
+                        self.dt = dt_floor 
                         cnt_consecutive_fail = 0
                     else:
-                        # Gradient is truly wrong, collapse
-                        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                         return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
                 else:
                     self.dt *= 0.2
-                    if self.dt < 1e-9: # Safety floor
-                         a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                    if self.dt < 1e-9: 
+                         a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                          return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             self.dt = min(self.dt, self.params['dt_max'])
             dt_min_seen = min(dt_min_seen, self.dt)
             dt_max_seen = max(dt_max_seen, self.dt)
 
-        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
         return phi, False, norm_init, norm, 0.0, k, "MAX_ITER", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
 # ============================================================================
@@ -642,7 +648,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
              current_dt = next_dt
         else:
              phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
-             a1_counts = {'step':0,'noise':0,'sniper':0, 'dt_min':0.0, 'dt_max':0.0} 
+             a1_counts = {'step':0,'noise':0,'sniper':0, 'force_step':0, 'dt_min':0.0, 'dt_max':0.0} 
         
         dt_after = float(current_dt) if 'A1' in solver_type else 0.0
         dur = time.time() - start
@@ -701,6 +707,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'a1_step': a1_counts.get('step', 0),
             'a1_noise': a1_counts.get('noise', 0),
             'a1_sniper': a1_counts.get('sniper', 0),
+            'a1_force_step': a1_counts.get('force_step', 0), # [v1.4.6-030] New Field
             'last_gmres_info': last_gmres, 
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
             'g_tol': g_params[0], 'g_max': g_params[1], 'g_rst': g_params[2],
@@ -731,7 +738,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             row['diag_term_min'] = float(jnp.min(d_term))
             row['diag_term_max'] = float(jnp.max(d_term))
             if 'A1' in solver_type:
-                # [v1.4.6-029] Reverted to Standard A1
+                # [v1.4.6-030] Standard Diag
                 if dt_before > 0:
                     m_diag_b = (1.0/dt_before) - d_total 
                     row['M_diag_min_before'] = float(jnp.min(m_diag_b))
@@ -773,7 +780,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-029 (PHYSICS HARDENING & LOGIC CONSOLIDATION) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-030 (NEWTON KILL ZONE SWEEP) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s, Normal={MAX_STEP_TIME_NORMAL}s")
@@ -784,6 +791,8 @@ def main():
             
             for params in SCAN_PARAMS:
                 case_id = params['CaseID']
+                print(f"  > Case: {case_id} (Q_trap={params['Q_trap']:.1e})")
+                
                 relay_target = params['RelayBias']
                 relay_k = int(np.floor(relay_target / base_step + 1e-9))
                 relay_bias_baseline_snapped = relay_k * base_step
@@ -796,8 +805,7 @@ def main():
                     'relay_delta': snap_delta,
                     'relay_type': 'TARGET' 
                 }
-                print(f"  # RelaySnap: Target={relay_target}V -> {relay_bias_baseline_snapped:.2f}V (Step {base_step}V, Delta {snap_delta:.2e}V)")
-
+                
                 stop_bias_base = relay_bias_baseline_snapped 
                 
                 df_base, last_phi_base, max_bias_base, fail_reason_base, phi_relay, _ = run_sweep_stress(
@@ -825,7 +833,7 @@ def main():
                     'relay_delta': snap_delta
                 })
                 
-                # Baseline Autopsy Logic
+                # Baseline Autopsy Logic (Always run for sweep diagnosis)
                 if base_fail_class == "NUMERIC_FAIL" and (max_bias_base == 0.0 or np.isnan(max_bias_base)) and "MAX_ITER" in fail_reason_base:
                     print(f"    [Strategy] Baseline Autopsy: Retrying 0.0V with {BASELINE_DIAG_PARAMS['max_iter']} iters...")
                     df_diag, _, _, diag_reason, _, _ = run_sweep_stress(
@@ -855,7 +863,6 @@ def main():
                     relay_meta_boot['baseline_fail_class'] = base_fail_class
                     relay_meta_boot['baseline_fail_reason'] = fail_reason_base
                     
-                    # Run A1 Standard (v029 Consolidated)
                     df_a1_anchor, last_phi_anchor, max_bias_anchor, fail_r_anchor, _, _ = run_sweep_stress(
                         params, grid_cfg, base_step, 'A1',
                         start_bias=0.0, stop_bias=None,
@@ -884,7 +891,7 @@ def main():
                             init_phi=last_phi_anchor, 
                             relay_meta=relay_meta_sprint,
                             a1_span=0.5,
-                            solver_params=None # Use Standard A1
+                            solver_params=None 
                         )
                         full_logs.append(df_a1_sprint)
                         
@@ -921,10 +928,10 @@ def main():
 
                 gc.collect()
 
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-029_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-029_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-030_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-030_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-029_FullLog.csv, Stress_v1.4.6-029_Summary.csv")
+    print("Saved: Stress_v1.4.6-030_FullLog.csv, Stress_v1.4.6-030_Summary.csv")
 
 if __name__ == "__main__":
     main()
