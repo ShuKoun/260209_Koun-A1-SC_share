@@ -1,16 +1,19 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-014.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-014 (離散敏感性驗證: Ultra Grid)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-014 (Grid Sensitivity Validation: Ultra Grid)
-版本號 (Version): Harness v1.4.6-014
-前置版本 (Prev Version): Harness v1.4.6-013
+文件名 (Filename): BenchS_StressHarness_v1.4.6-015.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-015 (幾何極限突破: Sub-nm on Ultra - C4 Only)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-015 (Geometry Singularity: Sub-nm on Ultra - C4 Only)
+版本號 (Version): Harness v1.4.6-015
+前置版本 (Prev Version): Harness v1.4.6-014
 
 變更日誌 (Changelog):
-    1. [Strategy] Phase V - 離散敏感性驗證 (GridProbe-Ultra)：
-       在 GRID_LIST 中新增 {'Nx': 240, 'Ny': 120, 'Tag': 'Ultra'}。
-       目標：驗證 Baseline 的"不死之身"是否源於網格過粗導致的梯度平滑效應。
-    2. [Invariant] 參數鎖定：保持 C4 的 BiasMax=12.0, RelayBias=12.0, SlotW=1.0, Q_trap=3e19, Alpha=0.00 不變。
-    3. [Invariant] 架構繼承：完全繼承 v1.4.6-013 的代碼邏輯 (含 warmup fix)。
+    1. [Strategy] 幾何極限突破 (Phase W)：
+       鎖定 Grid 為 Ultra (240x120) 以保證最高離散解析度。
+       將 Case C4 的 SlotW_nm 從 1.0 進一步壓縮至 0.5 (Sub-nm)。
+       目標：在 Ultra 網格上製造極端幾何梯度的電場奇點，測試 Baseline 的數值穩定性邊界。
+    2. [Scope] 聚焦 C4 (C4 Only)：
+       從 SCAN_PARAMS 中移除 C2/C3，僅保留 C4，確保單變量驗證的數據純淨度。
+    3. [Invariant] 參數鎖定：保持 C4 的 BiasMax=12.0, RelayBias=12.0, Q_trap=3e19, Alpha=0.00 不變。
+    4. [Invariant] 架構繼承：完全繼承 v1.4.6-014 的代碼邏輯 (含 warmup fix)。
 """
 
 import os
@@ -57,11 +60,9 @@ ni = 1.0e10; ni_vac = 1.0e-20
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-014] Phase V: Added Ultra Grid
+# [v1.4.6-015] Phase W: Locked to Ultra Grid only
 GRID_LIST = [
-    {'Nx': 120, 'Ny': 60,  'Tag': 'Std'},   # Standard
-    {'Nx': 180, 'Ny': 90,  'Tag': 'Dense'}, # 1.5x Density
-    {'Nx': 240, 'Ny': 120, 'Tag': 'Ultra'}  # 2.0x Density (New Validation Axis)
+    {'Nx': 240, 'Ny': 120, 'Tag': 'Ultra'}  # 2.0x Density (High Resolution Probe)
 ]
 
 # [Stress Axis 2] Baseline Step Size
@@ -69,16 +70,12 @@ BASELINE_STEP_LIST = [0.2, 0.4]
 
 # Case Definition (Physics identical to v1.7.12)
 SCAN_PARAMS = [
-    # Case 2: Asymmetric
-    {'CaseID': 'C2', 'SlotW_nm': 2.0, 'N_high': 3e20, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 0.0, 'Alpha': 0.4, 'RelayBias': 7.0, 'A1_Step': 0.1},
+    # [v1.4.6-015] C4 Only: Removed C2/C3 to isolate Geometry Axis
     
-    # Case 3: The Killer
-    {'CaseID': 'C3', 'SlotW_nm': 2.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 1.0e18, 'Alpha': 0.2, 'RelayBias': 4.0, 'A1_Step': 0.05},
-
     # [Case 4] The Wall (Extreme Physics)
-    # [v1.4.6-013/014] Bias Ceiling B4: BiasMax/RelayBias -> 12.0V
-    # SlotW=1.0nm (B1), Q_trap=3.0e19 (B2-Extreme), Alpha=0.00 (B3-Extreme) -> Multi-Dimension Stress
-    {'CaseID': 'C4', 'SlotW_nm': 1.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
+    # [v1.4.6-015] Geometry Hardening: SlotW -> 0.5nm (Sub-nm)
+    # Invariants: BiasMax=12.0, RelayBias=12.0, Q_trap=3e19, Alpha=0.00
+    {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
@@ -695,7 +692,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-014 (GRID PROBE: ULTRA) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-015 (GEOMETRY SINGULARITY: SUB-NM ON ULTRA - C4 ONLY) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -842,10 +839,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-014_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-014_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-015_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-015_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-014_FullLog.csv, Stress_v1.4.6-014_Summary.csv")
+    print("Saved: Stress_v1.4.6-015_FullLog.csv, Stress_v1.4.6-015_Summary.csv")
 
 if __name__ == "__main__":
     main()
