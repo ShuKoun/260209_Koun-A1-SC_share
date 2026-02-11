@@ -1,15 +1,15 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-006-Final-Revised.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-006 (數據邏輯嚴謹版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-006 (Data Logic Rigor)
-版本號 (Version): Harness v1.4.6-006-Final-Revised
-前置版本 (Prev Version): Harness v1.4.6-006-Final
+文件名 (Filename): BenchS_StressHarness_v1.4.6-007.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-007 (物理加硬 B1: 1.0nm)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-007 (Physics Hardening B1: 1.0nm)
+版本號 (Version): Harness v1.4.6-007
+前置版本 (Prev Version): Harness v1.4.6-006-Final-Revised
 
 變更日誌 (Changelog):
-    1. [Data] 邏輯嚴謹化：廢除 TARGET 模式下 Delta=0 的硬編碼，統一使用 (A1_Start - Baseline_Last_Success) 公式計算。
-    2. [Data] 上下文顯式化：在 TARGET 模式下顯式填充 Baseline 的成功狀態 (CONV/NONE/SnappedBias)，不再依賴 max_bias 的隱式語義。
-    3. [Strategy] 偏壓極限：維持 C4 RelayBias = 8.0V (BiasMax)。
-    4. [Invariant] 環境繼承：保留所有 GPU 防禦 (No CUDA Graph, Mem .35) 與去特權算法邏輯。
+    1. [Strategy] 物理加硬 (B1)：將 Case C4 的 SlotW_nm 從 1.5 進一步壓縮至 1.0。
+       目標：在 Bias 軸已驗證無效 (8.0V 存活) 後，通過幾何收縮製造極限電場梯度，逼迫 Baseline 發生數值崩潰。
+    2. [Invariant] 參數鎖定：保持 RelayBias=8.0 (BiasMax)、Q_trap=3e18、Alpha=0.15 不變，確保單變量控制。
+    3. [Invariant] 架構繼承：完全保留 v1.4.6-006 的數據定義、Early Relay 機制與 GPU 防禦。
 """
 
 import os
@@ -42,9 +42,9 @@ jax.config.update("jax_enable_x64", True)
 # [Ops] Device Check
 print(f"[{time.strftime('%H:%M:%S')}] JAX Device Check: {jax.devices()}")
 if 'cpu' in str(jax.devices()[0]).lower():
-    print("⚠️ WARNING: JAX is running on CPU! Performance will be degraded.")
+    print("WARNING: JAX is running on CPU! Performance will be degraded.")
 else:
-    print("✅ SUCCESS: JAX is running on GPU.")
+    print("SUCCESS: JAX is running on GPU.")
 
 # ============================================================================
 # 0. Configuration & Stress Parameters
@@ -73,8 +73,8 @@ SCAN_PARAMS = [
     {'CaseID': 'C3', 'SlotW_nm': 2.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 1.0e18, 'Alpha': 0.2, 'RelayBias': 4.0, 'A1_Step': 0.05},
 
     # [Case 4] The Wall (Extreme Physics)
-    # [v1.4.6-006] RelayBias raised to 8.0 (BiasMax)
-    {'CaseID': 'C4', 'SlotW_nm': 1.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e18, 'Alpha': 0.15, 'RelayBias': 8.0, 'A1_Step': 0.05},
+    # [v1.4.6-007] Physical Hardening B1: SlotW compressed to 1.0nm (was 1.5nm)
+    {'CaseID': 'C4', 'SlotW_nm': 1.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e18, 'Alpha': 0.15, 'RelayBias': 8.0, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
@@ -691,7 +691,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-006-Final-Revised (DATA RIGOR) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-007 (PHYSICS HARDENING B1) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -838,10 +838,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-006-Final-Revised_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-006-Final-Revised_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-007_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-007_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-006-Final-Revised_FullLog.csv, Stress_v1.4.6-006-Final-Revised_Summary.csv")
+    print("Saved: Stress_v1.4.6-007_FullLog.csv, Stress_v1.4.6-007_Summary.csv")
 
 if __name__ == "__main__":
     main()
