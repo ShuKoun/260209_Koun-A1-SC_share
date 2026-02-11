@@ -1,18 +1,18 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-019.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-019 (結構破壞: 幾何穿刺 - Puncture)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-019 (Structure Breaking: Geometry Puncture)
-版本號 (Version): Harness v1.4.6-019
-前置版本 (Prev Version): Harness v1.4.6-018
+文件名 (Filename): BenchS_StressHarness_v1.4.6-020.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-020 (結構破壞: 邊界耦合穿刺 - Refined)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-020 (Structure Breaking: Boundary-Coupled Puncture - Refined)
+版本號 (Version): Harness v1.4.6-020
+前置版本 (Prev Version): Harness v1.4.6-019
 
 變更日誌 (Changelog):
-    1. [Strategy] 結構性破壞 (Phase Structure-Breaking)：
-       基於 v018 診斷（屏蔽效應主導），實施幾何穿刺以打破電勢鉗制。
-    2. [Modification] 全貫穿槽 (Full Puncture)：
-       在 setup_materials 中，將 slot_h 強制設定為 Ly * 2.0 (大於器件高度)。
-       這消除了槽上下的矽通道，強制高壓差直接跨越 0.5nm 的真空隙。
-    3. [Invariant] 繼承 v018：
-       保持 MegaUltra2 網格、C4 Only 參數、以及完整的結構診斷探針 (Probe)。
+    1. [Strategy] 邊界耦合穿刺 (Boundary-Coupled Puncture)：
+       將真空隙中心移至 1.0 * dx (緊貼左邊界)。
+       目標：強制邊界驅動電壓 (12V) 直接跨越真空隙注入內點，消除 Silicon Buffer 的屏蔽效應。
+    2. [Robustness] 動態幾何計算：
+       setup_materials 不再硬編碼 nx/ny，改由 X.shape 動態推導 dx，防止網格調整導致的幾何漂移。
+    3. [Invariant] 繼承 v019：
+       保持 MegaUltra2 網格、C4 Only 參數、全貫穿槽高 (slot_h=2Ly)、以及完整的診斷探針。
 """
 
 import os
@@ -59,7 +59,7 @@ ni = 1.0e10; ni_vac = 1.0e-20
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-019] Inherit MegaUltra2 (High Resolution)
+# [v1.4.6-020] Inherit MegaUltra2
 GRID_LIST = [
     {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
@@ -69,8 +69,7 @@ BASELINE_STEP_LIST = [0.2, 0.4]
 
 # Case Definition
 SCAN_PARAMS = [
-    # [v1.4.6-019] C4 Only (Inherited + Puncture via setup_materials)
-    # SlotW=0.5nm, BiasMax=12.0V, Q_trap=3e19
+    # [v1.4.6-020] C4 Only (Inherited)
     {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
@@ -362,12 +361,20 @@ class KounA1Solver:
 # ============================================================================
 def setup_materials(X, Y, params):
     slot_w = params['SlotW_nm'] * 1e-7 
-    # [v1.4.6-019] Geometry Puncture: Force Through-Wafer Slot
-    # Old: slot_h = 30.0 * 1e-7 
-    slot_h = Ly * 2.0 # Full Puncture Mode
-    
+    # [v1.4.6-020] Boundary-Coupled Puncture
+    slot_h = Ly * 2.0 
     y_center = 0.7 * Ly 
-    mask_vac = (jnp.abs(X - Lx/2) < slot_w/2) & (jnp.abs(Y - y_center) < slot_h/2)
+    
+    # [v1.4.6-020] Shifted Vac Center to Left Boundary
+    # Dynamic dx calculation
+    ny_in, nx_in = X.shape 
+    nx = X.shape[1]
+    dx = Lx / (nx - 1)
+    
+    # Force vacuum to touch boundary (1.0 * dx)
+    x_center_shifted = 1.0 * dx
+    
+    mask_vac = (jnp.abs(X - x_center_shifted) < slot_w/2) & (jnp.abs(Y - y_center) < slot_h/2)
     mask_vac = mask_vac.astype(jnp.float64)
     mask_si = 1.0 - mask_vac
     eps_map = (mask_si * 11.7 + mask_vac * 1.0) * eps_0
@@ -779,7 +786,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-019 (STRUCTURE BREAKING: PUNCTURE - C4 ONLY) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-020 (STRUCTURE BREAKING: BOUNDARY-COUPLED PUNCTURE - REFINED) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -926,10 +933,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-019_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-019_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-020_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-020_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-019_FullLog.csv, Stress_v1.4.6-019_Summary.csv")
+    print("Saved: Stress_v1.4.6-020_FullLog.csv, Stress_v1.4.6-020_Summary.csv")
 
 if __name__ == "__main__":
     main()
