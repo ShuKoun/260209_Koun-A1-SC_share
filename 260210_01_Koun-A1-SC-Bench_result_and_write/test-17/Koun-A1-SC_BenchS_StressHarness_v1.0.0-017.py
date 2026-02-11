@@ -1,18 +1,19 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-016.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-016 (離散極限突破: SuperUltra on Sub-nm - C4 Only)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-016 (Discretization Breakthrough: SuperUltra on Sub-nm - C4 Only)
-版本號 (Version): Harness v1.4.6-016
-前置版本 (Prev Version): Harness v1.4.6-015
+文件名 (Filename): BenchS_StressHarness_v1.4.6-017.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-017 (離散極限突破: MegaUltra2 - 3-Cell Threshold)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-017 (Discretization Breakthrough: MegaUltra2 - 3-Cell Threshold)
+版本號 (Version): Harness v1.4.6-017
+前置版本 (Prev Version): Harness v1.4.6-016
 
 變更日誌 (Changelog):
-    1. [Strategy] 離散極限突破 (GridProbe-SuperUltra)：
-       將 GRID_LIST 鎖定為 Nx=480, Ny=240 (Tag='SuperUltra')。
-       目標：使 dx ≈ 0.209nm，確保 SlotW=0.5nm 至少覆蓋 2 個網格單元，消除幾何混疊效應。
+    1. [Strategy] 離散極限突破 (GridProbe-MegaUltra2)：
+       將 GRID_LIST 鎖定為 Nx=640, Ny=320 (Tag='MegaUltra2')。
+       目標：使 dx ≈ 0.156nm，確保 SlotW=0.5nm 覆蓋 >3 個網格單元 (3-Cell Rule)，
+       迫使 Solver 面對完全解析的幾何梯度懸崖。
     2. [Scope] 保持 C4 Only：
        SCAN_PARAMS 僅保留 C4，確保單變量驗證。
     3. [Invariant] 參數鎖定：保持 C4 的 SlotW=0.5, BiasMax=12.0, RelayBias=12.0, Q_trap=3e19, Alpha=0.00 不變。
-    4. [Invariant] 架構繼承：完全繼承 v1.4.6-015 的代碼邏輯。
+    4. [Invariant] 架構繼承：完全繼承 v1.4.6-016 的代碼邏輯。
 """
 
 import os
@@ -59,10 +60,10 @@ ni = 1.0e10; ni_vac = 1.0e-20
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-016] GridProbe-SuperUltra: Nx=480, Ny=240
-# Target dx approx 0.209nm to resolve 0.5nm feature
+# [v1.4.6-017] GridProbe-MegaUltra2: Nx=640, Ny=320
+# Target dx approx 0.156nm to cross 3-cell threshold for 0.5nm feature
 GRID_LIST = [
-    {'Nx': 480, 'Ny': 240, 'Tag': 'SuperUltra'}
+    {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
 
 # [Stress Axis 2] Baseline Step Size
@@ -70,10 +71,10 @@ BASELINE_STEP_LIST = [0.2, 0.4]
 
 # Case Definition (Physics identical to v1.7.12)
 SCAN_PARAMS = [
-    # [v1.4.6-015/016] C4 Only
+    # [v1.4.6-015/016/017] C4 Only
     
     # [Case 4] The Wall (Extreme Physics)
-    # [v1.4.6-016] Invariants: SlotW=0.5nm, BiasMax=12.0, Q_trap=3e19, Alpha=0.00
+    # [v1.4.6-017] Invariants: SlotW=0.5nm, BiasMax=12.0, Q_trap=3e19, Alpha=0.00
     {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
@@ -691,7 +692,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-016 (DISCRETIZATION BREAKTHROUGH: SUPERULTRA - C4 ONLY) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-017 (DISCRETIZATION BREAKTHROUGH: MEGAULTRA2 - 3-CELL THRESHOLD) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -838,10 +839,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-016_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-016_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-017_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-017_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-016_FullLog.csv, Stress_v1.4.6-016_Summary.csv")
+    print("Saved: Stress_v1.4.6-017_FullLog.csv, Stress_v1.4.6-017_Summary.csv")
 
 if __name__ == "__main__":
     main()
