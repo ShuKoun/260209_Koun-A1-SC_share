@@ -1,14 +1,14 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-010.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-010 (物理加硬 B2-Extreme: 3e19 Trap)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-010 (Physics Hardening B2-Extreme: 3e19 Trap)
-版本號 (Version): Harness v1.4.6-010
-前置版本 (Prev Version): Harness v1.4.6-009
+文件名 (Filename): BenchS_StressHarness_v1.4.6-011.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-011 (物理加硬 B3: Alpha 極限)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-011 (Physics Hardening B3: Alpha Limit)
+版本號 (Version): Harness v1.4.6-011
+前置版本 (Prev Version): Harness v1.4.6-010
 
 變更日誌 (Changelog):
-    1. [Strategy] 物理加硬 (B2-Extreme)：將 Case C4 的 Q_trap 從 2.0e19 進一步提升至 3.0e19。
-       目標：這是 Trap 密度軸的終極試探。若 Baseline 仍存活，說明單純增加電荷密度在當前幾何下不足以引發數值崩潰。
-    2. [Invariant] 參數鎖定：保持 SlotW=1.0、RelayBias=8.0、Alpha=0.15 不變，確保單變量極限測試。
+    1. [Strategy] 物理加硬 (B3)：將 Case C4 的 Alpha 從 0.15 降至 0.05。
+       目標：在幾何 (1.0nm) 和電荷 (3.0e19) 均已鎖定在極限高壓的前提下，通過極端不對稱的邊界條件製造局部電場奇點。
+    2. [Invariant] 參數鎖定：保持 SlotW=1.0、Q_trap=3.0e19 (B2-Extreme)、RelayBias=8.0 不變，形成多維度物理夾擊。
     3. [Invariant] 架構繼承：完全保留 v1.4.6-006-Final-Revised 的數據定義與 GPU 防禦。
 """
 
@@ -73,9 +73,9 @@ SCAN_PARAMS = [
     {'CaseID': 'C3', 'SlotW_nm': 2.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 1.0e18, 'Alpha': 0.2, 'RelayBias': 4.0, 'A1_Step': 0.05},
 
     # [Case 4] The Wall (Extreme Physics)
-    # [v1.4.6-010] Physical Hardening B2-Extreme: Q_trap boosted to 3.0e19 (was 2.0e19)
-    # SlotW=1.0nm (kept from B1), RelayBias=8.0V (kept from A3)
-    {'CaseID': 'C4', 'SlotW_nm': 1.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e19, 'Alpha': 0.15, 'RelayBias': 8.0, 'A1_Step': 0.05},
+    # [v1.4.6-011] Physical Hardening B3: Alpha reduced to 0.05 (Extreme Asymmetry)
+    # SlotW=1.0nm (B1), Q_trap=3.0e19 (B2-Extreme), RelayBias=8.0V (A3) -> Multi-Dimension Stress
+    {'CaseID': 'C4', 'SlotW_nm': 1.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e19, 'Alpha': 0.05, 'RelayBias': 8.0, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
@@ -692,7 +692,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-010 (PHYSICS HARDENING B2-Extreme) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-011 (PHYSICS HARDENING B3) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -839,10 +839,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-010_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-010_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-011_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-011_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-010_FullLog.csv, Stress_v1.4.6-010_Summary.csv")
+    print("Saved: Stress_v1.4.6-011_FullLog.csv, Stress_v1.4.6-011_Summary.csv")
 
 if __name__ == "__main__":
     main()
