@@ -1,17 +1,21 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-024.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-024 (A1 自啟動介入 - 修復版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-024 (A1 Bootstrap Override - Fixed)
-版本號 (Version): Harness v1.4.6-024
-前置版本 (Prev Version): Harness v1.4.6-023
+文件名 (Filename): BenchS_StressHarness_v1.4.6-025.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-025 (A1 錨點調優與深度診斷)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-025 (A1 Anchor Tuning & Deep Diagnostics)
+版本號 (Version): Harness v1.4.6-025
+前置版本 (Prev Version): Harness v1.4.6-024
 
 變更日誌 (Changelog):
-    1. [Fix] 修復 v023b 在 run_sweep_stress 內部的 NameError 與遞歸邏輯錯誤。
-    2. [Strategy] A1 Bootstrap Override (Logic moved to main):
-       當 Baseline 在 0.0V 失敗時，不跳過 A1，而是觸發兩階段自啟動測試：
-       - Step 1: Anchor (0.0V) - 驗證 A1 能否在 Baseline 死掉的地方存活。
-       - Step 2: Sprint (0.0->0.5V) - 驗證 A1 能否繼續推進。
-    3. [Invariant] 物理參數 (Decoupled Carrier Suppression)、網格 (MegaUltra2)、Probe 邏輯保持 v023 不變。
+    1. [Tuning] 引入 A1_BOOT_PARAMS：
+       - 專用於 Bootstrap Anchor (0.0V) 階段。
+       - 特徵：高精度 GMRES (1e-2/80/20)，限制 dt_max (0.1)，增加 max_outer_iter (200)。
+       - 目標：防止 A1 在高剛性起點因步長過大而漂移 (Drift)。
+    2. [Diagnostics] 強化日誌 (Deep Logging)：
+       - 即使失敗 (FAIL) 也強制執行 Probe 診斷 (phi_min/max, log_exp, M_diag)。
+       - 新增字段：norm_init, norm_final, dt_min, dt_max_seen, a1_counts。
+    3. [Logic] Harness 支援參數覆蓋 (Parameter Override)：
+       - run_sweep_stress 現在接受 solver_params 參數。
+       - Main 函數在 Anchor 步驟顯式傳入 A1_BOOT_PARAMS。
 """
 
 import os
@@ -54,7 +58,7 @@ else:
 q = 1.602e-19; kb = 1.38e-23; T = 300.0; eps_0 = 8.85e-14
 Vt = (kb * T) / q
 
-# [v1.4.6-023/024] Decoupled Parameters (Inherited)
+# [v1.4.6-023/024/025] Decoupled Parameters (Inherited)
 ni_bc = 1.0e10    
 ni_phys = 1.0e4   
 ni_vac = 1.0e-26  
@@ -62,7 +66,7 @@ ni_vac = 1.0e-26
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-024] Inherit MegaUltra2
+# [v1.4.6-025] Inherit MegaUltra2
 GRID_LIST = [
     {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
@@ -72,7 +76,7 @@ BASELINE_STEP_LIST = [0.2, 0.4]
 
 # Case Definition
 SCAN_PARAMS = [
-    # [v1.4.6-024] C4 Only
+    # [v1.4.6-025] C4 Only
     {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e17, 'N_low': 1e13, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
@@ -89,12 +93,25 @@ BASELINE_PARAMS = {
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
+# [v1.4.6-025] Standard A1 Params (For Sprint/Normal Run)
 A1_PARAMS = {
     'gmres_tol': 1e-1, 'gmres_maxiter': 30, 'gmres_restart': 5,
     'dt_reset': False, 'max_outer_iter': 50,
+    'dt_init': 1e-4,        # Explicit Init
     'dt_max': 10.0,         
     'dt_growth_cap': 2.0,   
     'dt_shrink_noise': 0.8  
+}
+
+# [v1.4.6-025] Bootstrap Anchor Params (Tighter, Slower)
+A1_BOOT_PARAMS = {
+    'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20, # Baseline-grade GMRES
+    'dt_reset': True,       # Force Reset
+    'max_outer_iter': 200,  # More patience
+    'dt_init': 1e-5,        # Start smaller
+    'dt_max': 0.1,          # Cap growth (Don't let it fly to 10.0)
+    'dt_growth_cap': 1.2,   # Slow growth
+    'dt_shrink_noise': 0.5  # Fast shrink
 }
 
 # ============================================================================
@@ -174,7 +191,7 @@ def matvec_op_a1(v, phi_in, dt_inv, M_inv, bias_L, bias_R, eps_map, N_dop, ni_ma
     return M_inv * Av    
 
 # ============================================================================
-# 2. Solvers (Instrumented with dynamic budget)
+# 2. Solvers (Instrumented with dynamic budget & Deep Logging)
 # ============================================================================
 class BaselineNewton:
     def __init__(self, params): self.params = params
@@ -248,13 +265,13 @@ class BaselineNewton:
 class KounA1Solver:
     def __init__(self, params): 
         self.params = params
-        self.dt = 1e-4
+        self.dt = self.params.get('dt_init', 1e-4)
         
     def solve_step(self, phi_init, bias_L, bias_R, prev_dt, physics_args, step_time_limit=30.0):
         nx, ny = physics_args[-2], physics_args[-1]
         
         if self.params['dt_reset']: 
-            self.dt = 1e-4
+            self.dt = self.params.get('dt_init', 1e-4)
         else: 
             self.dt = max(prev_dt * 0.5, 1e-4)
         
@@ -267,18 +284,22 @@ class KounA1Solver:
         t_lin = 0.0; t_ls = 0.0; t_res = 0.0
         last_gmres_info = 0
         
+        # [v1.4.6-025] DT Trace
+        dt_min_seen = self.dt
+        dt_max_seen = self.dt
+
         t0 = time.time()
         res = internal_residual(phi, bias_L, bias_R, *physics_args)
         norm_init = float(jnp.linalg.norm(res))
         norm = norm_init
         t_res += time.time() - t0
         
-        a1_stats = {'step':0, 'noise':0, 'sniper':0}
+        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
         captured_g_params = (self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart'])
 
         for k in range(self.params['max_outer_iter']):
             if time.time() - start_time > step_time_limit:
-                a1_stats['step']=cnt_step; a1_stats['noise']=cnt_noise; a1_stats['sniper']=cnt_sniper
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "TIMEOUT", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             if k > 0:
@@ -291,7 +312,7 @@ class KounA1Solver:
             
             if norm < 1e-4: 
                 rel = (norm_init - norm)/(norm_init+1e-12)
-                a1_stats['step']=cnt_step; a1_stats['noise']=cnt_noise; a1_stats['sniper']=cnt_sniper
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, True, norm_init, norm, rel, k, f"CONV({cnt_step}/{cnt_noise}/{cnt_sniper})", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             t0 = time.time()
@@ -351,12 +372,14 @@ class KounA1Solver:
             else:
                 self.dt *= 0.2
                 if self.dt < 1e-9: 
-                    a1_stats['step']=cnt_step; a1_stats['noise']=cnt_noise; a1_stats['sniper']=cnt_sniper
+                    a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                     return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             self.dt = min(self.dt, self.params['dt_max'])
+            dt_min_seen = min(dt_min_seen, self.dt)
+            dt_max_seen = max(dt_max_seen, self.dt)
 
-        a1_stats['step']=cnt_step; a1_stats['noise']=cnt_noise; a1_stats['sniper']=cnt_sniper
+        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
         return phi, False, norm_init, norm, 0.0, k, "MAX_ITER", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
 # ============================================================================
@@ -506,7 +529,7 @@ def warmup_kernels():
             print(f" Done ({time.time()-start_case:.2f}s)")
     print(">>> JIT WARMUP COMPLETE.\n")
 
-def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_bias, init_phi=None, capture_k=None, relay_meta=None, a1_span=None):
+def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_bias, init_phi=None, capture_k=None, relay_meta=None, a1_span=None, solver_params=None):
     if solver_type == 'A1':
         assert a1_span is not None, "Error: A1 solver requires 'a1_span'."
     else:
@@ -539,7 +562,13 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             phi_full = phi_full.at[:, i].set(phi_seed_L*(1-r) + phi_seed_R*r)
         phi_init = phi_full[1:-1, 1:-1].flatten()
         
-    solver = KounA1Solver(A1_PARAMS) if solver_type == 'A1' else BaselineNewton(BASELINE_PARAMS)
+    # [v1.4.6-025] Parameter Override Logic
+    if solver_type == 'A1':
+        params_to_use = solver_params if solver_params else A1_PARAMS
+        solver = KounA1Solver(params_to_use)
+    else:
+        solver = BaselineNewton(BASELINE_PARAMS)
+
     current_dt = 1e-4
     
     step_val = base_step if solver_type == 'Baseline' else params['A1_Step'] 
@@ -621,11 +650,11 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         
         if solver_type == 'A1':
              # [Algo v1.4.6-004a] Deprivileged: No is_relay_hard flag
-             phi_next, succ, _, res1, rel, iters, extra, last_gmres, next_dt, t_lin, t_res, t_ls, a1_counts, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, current_dt, physics_args, step_time_limit=budget)
+             phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, next_dt, t_lin, t_res, t_ls, a1_counts, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, current_dt, physics_args, step_time_limit=budget)
              current_dt = next_dt
         else:
-             phi_next, succ, _, res1, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
-             a1_counts = {'step':0,'noise':0,'sniper':0} 
+             phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
+             a1_counts = {'step':0,'noise':0,'sniper':0, 'dt_min':0.0, 'dt_max':0.0} 
         
         # [v1.4.6-018 Probe Fix] Snapshot dt_after
         dt_after = float(current_dt) if solver_type == 'A1' else 0.0
@@ -675,7 +704,8 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'fail_class': fail_class, 
             'iters': iters,
             'time': dur,
-            'res1': res1,
+            'norm_init': norm_init, 'norm_final': norm_final, # [v025] New
+            'res1': norm_final, # Legacy alias
             'gmres_boosted': gmres_boosted,
             'step_exec': current_step_size, 
             'is_anchor': is_anchor,
@@ -686,79 +716,77 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'baseline_fail_reason': baseline_fail_reason,
             'k_idx': k_idx,
             'k_start': bias_points[0][0] if len(bias_points)>0 else 0, 
-            'dt': dt_after if solver_type == 'A1' else 0.0, # Log next_dt as standard dt field
-            'dt_before': dt_before, # Probe field
-            'dt_after': dt_after,   # Probe field
+            'dt': dt_after if solver_type == 'A1' else 0.0, 
+            'dt_before': dt_before, 
+            'dt_after': dt_after,   
+            'dt_min_seen': a1_counts.get('dt_min', 0.0), # [v025] New
+            'dt_max_seen': a1_counts.get('dt_max', 0.0), # [v025] New
+            'a1_step': a1_counts.get('step', 0),
+            'a1_noise': a1_counts.get('noise', 0),
+            'a1_sniper': a1_counts.get('sniper', 0),
+            'last_gmres_info': last_gmres, # [v025] New
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
             'g_tol': g_params[0], 'g_max': g_params[1], 'g_rst': g_params[2],
             'step_budget': budget,
             'is_first_step': is_first_step
         }
         
-        # [v1.4.6-018 Probe] Calculate and Inject Diagnostic Data (Optimized & Safe)
-        if succ:
-            try:
-                # 1. Phi Stats (Reconstruct to get full field incl BCs)
-                phi_re = reconstruct_phi(phi_next, phi_bc_L, bc_R, nx, ny)
-                p_min = float(jnp.min(phi_re))
-                p_max = float(jnp.max(phi_re))
-                
-                # 2. Nonlinear Term (Inner Points Only - Critical for Safety)
-                # We care about internal nodes where the exponential term is active in the residual.
-                # phi_inner = phi_next (since phi_next is flattened inner vector)
-                # But to be safe and consistent with logic:
-                phi_inner = phi_next 
-                abs_phi_inner = jnp.abs(phi_inner)
-                max_abs_phi_inner = float(jnp.max(abs_phi_inner))
-                
-                # Log-domain metric (Stable)
-                log_max_exp = max_abs_phi_inner / Vt
-                
-                # Clipped Exp metric (Safe)
-                # Cap at 700 to avoid Inf (exp(709) is float64 limit)
-                arg_clipped = min(log_max_exp, 700.0)
-                max_exp_val = float(np.exp(arg_clipped))
+        # [v1.4.6-025] Deep Probe: Attempt to probe even on FAILURE
+        try:
+            # 1. Phi Stats (Reconstruct to get full field incl BCs)
+            phi_re = reconstruct_phi(phi_next, phi_bc_L, bc_R, nx, ny)
+            p_min = float(jnp.min(phi_re))
+            p_max = float(jnp.max(phi_re))
+            
+            # 2. Nonlinear Term (Inner Points Only)
+            phi_inner = phi_next 
+            abs_phi_inner = jnp.abs(phi_inner)
+            max_abs_phi_inner = float(jnp.max(abs_phi_inner))
+            
+            log_max_exp = max_abs_phi_inner / Vt
+            arg_clipped = min(log_max_exp, 700.0)
+            max_exp_val = float(np.exp(arg_clipped))
 
-                # 3. Diag J Stats
-                d_pois, d_term = get_diag_components(phi_next, phi_bc_L, bc_R, *physics_args)
-                d_total = d_pois + d_term
-                
-                row['phi_full_min'] = p_min
-                row['phi_full_max'] = p_max
-                row['log_max_exp_inner'] = log_max_exp 
-                row['max_exp_term_inner'] = max_exp_val
-                
-                row['diag_J_min'] = float(jnp.min(d_total))
-                row['diag_J_max'] = float(jnp.max(d_total))
-                row['diag_J_med'] = float(jnp.median(d_total)) 
-                
-                row['diag_pois_min'] = float(jnp.min(d_pois))
-                row['diag_pois_max'] = float(jnp.max(d_pois))
-                
-                row['diag_term_min'] = float(jnp.min(d_term))
-                row['diag_term_max'] = float(jnp.max(d_term))
-                
-                # 4. A1 Specific: M_diag_min (Double Check)
-                if solver_type == 'A1':
-                    # Check margin with dt_before (start of step)
-                    if dt_before > 0:
-                        m_diag_b = (1.0/dt_before) - d_total
-                        row['M_diag_min_before'] = float(jnp.min(m_diag_b))
-                    else:
-                        row['M_diag_min_before'] = np.nan
-                        
-                    # Check margin with dt_after (end of step suggestion)
-                    if dt_after > 0:
-                        m_diag_a = (1.0/dt_after) - d_total
-                        row['M_diag_min_after'] = float(jnp.min(m_diag_a))
-                    else:
-                        row['M_diag_min_after'] = np.nan
+            # 3. Diag J Stats
+            d_pois, d_term = get_diag_components(phi_next, phi_bc_L, bc_R, *physics_args)
+            d_total = d_pois + d_term
+            
+            row['phi_full_min'] = p_min
+            row['phi_full_max'] = p_max
+            row['log_max_exp_inner'] = log_max_exp 
+            row['max_exp_term_inner'] = max_exp_val
+            
+            row['diag_J_min'] = float(jnp.min(d_total))
+            row['diag_J_max'] = float(jnp.max(d_total))
+            row['diag_J_med'] = float(jnp.median(d_total)) 
+            
+            row['diag_pois_min'] = float(jnp.min(d_pois))
+            row['diag_pois_max'] = float(jnp.max(d_pois))
+            
+            row['diag_term_min'] = float(jnp.min(d_term))
+            row['diag_term_max'] = float(jnp.max(d_term))
+            
+            # 4. A1 Specific: M_diag_min
+            if solver_type == 'A1':
+                if dt_before > 0:
+                    m_diag_b = (1.0/dt_before) - d_total
+                    row['M_diag_min_before'] = float(jnp.min(m_diag_b))
                 else:
                     row['M_diag_min_before'] = np.nan
+                    
+                if dt_after > 0:
+                    m_diag_a = (1.0/dt_after) - d_total
+                    row['M_diag_min_after'] = float(jnp.min(m_diag_a))
+                else:
                     row['M_diag_min_after'] = np.nan
+            else:
+                row['M_diag_min_before'] = np.nan
+                row['M_diag_min_after'] = np.nan
 
-            except Exception as e:
-                print(f"    [Probe Error] {e}")
+        except Exception as e:
+            # If probe dies, we don't kill the harness, just log nan
+            # print(f"    [Probe Error] {e}") # Reduce spam for fail cases
+            pass
         
         if relay_meta:
             row['relay_target'] = relay_meta.get('relay_target')
@@ -777,10 +805,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         else:
             fail_reason = extra
             print(f"    !!! FAILED at {bias:.2f}V ({extra})")
-            
-            # [v1.4.6-024] A1 Bootstrap Override (Corrected Logic in Main)
-            # This check is now REDUNDANT here because we handle it in main.
-            # But we leave the break to exit the loop cleanly.
+            # Break on failure
             break
             
     return pd.DataFrame(results), last_phi, success_max_bias, fail_reason, captured_phi, n_steps_sprint
@@ -793,7 +818,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-024 (A1 BOOTSTRAP OVERRIDE - FIXED) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-025 (A1 ANCHOR TUNING & DEEP DIAGNOSTICS) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -860,8 +885,8 @@ def main():
                     print(f"    [Strategy] A1 BOOTSTRAP OVERRIDE ACTIVATED.")
                     print(f"    Baseline died at start. Attempting A1 self-start (Two-Step Verification).")
                     
-                    # Step 1: Anchor Test (0.0V Only)
-                    print(f"    [Strategy] Step 1: A1 Anchor Check at 0.0V...")
+                    # Step 1: Anchor Test (0.0V Only) - [v1.4.6-025] USING BOOT PARAMS
+                    print(f"    [Strategy] Step 1: A1 Anchor Check at 0.0V (Restricted dt/Tight GMRES)...")
                     
                     relay_phi_to_use = last_phi_base # Initial ramp
                     relay_meta_boot = relay_meta.copy()
@@ -870,11 +895,13 @@ def main():
                     relay_meta_boot['baseline_fail_class'] = base_fail_class
                     relay_meta_boot['baseline_fail_reason'] = fail_reason_base
                     
+                    # [v1.4.6-025] Explicitly pass A1_BOOT_PARAMS
                     df_a1_anchor, last_phi_anchor, max_bias_anchor, fail_r_anchor, _, _ = run_sweep_stress(
                         params, grid_cfg, base_step, 'A1',
                         start_bias=0.0, stop_bias=None,
                         init_phi=relay_phi_to_use, relay_meta=relay_meta_boot,
-                        a1_span=0.0 # Anchor only
+                        a1_span=0.0, # Anchor only
+                        solver_params=A1_BOOT_PARAMS # <--- KEY CHANGE
                     )
                     full_logs.append(df_a1_anchor)
                     
@@ -893,12 +920,14 @@ def main():
                         relay_meta_sprint['baseline_fail_class'] = base_fail_class
                         relay_meta_sprint['baseline_fail_reason'] = fail_reason_base
                         
+                        # [v1.4.6-025] Use Standard A1_PARAMS for sprint (implied None)
                         df_a1_sprint, _, max_bias_sprint, fail_r_sprint, _, sprint_n = run_sweep_stress(
                             params, grid_cfg, base_step, 'A1',
                             start_bias=0.0, stop_bias=None,
                             init_phi=last_phi_anchor, # Chained from Anchor result
                             relay_meta=relay_meta_sprint,
-                            a1_span=0.5 
+                            a1_span=0.5,
+                            solver_params=None # Use Default A1_PARAMS
                         )
                         full_logs.append(df_a1_sprint)
                         
@@ -937,9 +966,9 @@ def main():
                 # Normal Relay Path (Only if Baseline succeeded enough)
                 elif phi_relay is None and not np.isnan(max_bias_base) and not is_bootstrap_needed:
                     relay_phi_to_use = last_phi_base
-                    start_bias_a1 = max_bias_base # Simplification for Early Relay (usually calculated above)
+                    start_bias_a1 = max_bias_base 
                     
-                    # Re-calculate Conservative Snapping for Early Relay (copied from v23 logic)
+                    # Re-calculate Conservative Snapping for Early Relay
                     a1_step_val = params['A1_Step']
                     k_early = int(np.floor(max_bias_base / a1_step_val + 1e-9))
                     start_bias_a1 = k_early * a1_step_val
@@ -990,18 +1019,13 @@ def main():
                         'relay_type': relay_type
                     })
                 
-                # If Baseline success to target (phi_relay exists), Normal Target Relay code would go here
-                # But in v023 context, Baseline dies at 0.0, so we skip standard path code for brevity/focus on bootstrap.
-                # (Standard Target Relay block is implicitly skipped if phi_relay is None)
-                
                 gc.collect()
-                # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-024_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-024_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-025_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-025_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-024_FullLog.csv, Stress_v1.4.6-024_Summary.csv")
+    print("Saved: Stress_v1.4.6-025_FullLog.csv, Stress_v1.4.6-025_Summary.csv")
 
 if __name__ == "__main__":
     main()
