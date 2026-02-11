@@ -1,19 +1,18 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-017.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-017 (離散極限突破: MegaUltra2 - 3-Cell Threshold)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-017 (Discretization Breakthrough: MegaUltra2 - 3-Cell Threshold)
-版本號 (Version): Harness v1.4.6-017
-前置版本 (Prev Version): Harness v1.4.6-016
+文件名 (Filename): BenchS_StressHarness_v1.4.6-018.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-018 (結構診斷: 剛性探針 - 語義精確版)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-018 (Structural Diagnosis: Rigidity Probe - Semantic Precision)
+版本號 (Version): Harness v1.4.6-018
+前置版本 (Prev Version): Harness v1.4.6-017
 
 變更日誌 (Changelog):
-    1. [Strategy] 離散極限突破 (GridProbe-MegaUltra2)：
-       將 GRID_LIST 鎖定為 Nx=640, Ny=320 (Tag='MegaUltra2')。
-       目標：使 dx ≈ 0.156nm，確保 SlotW=0.5nm 覆蓋 >3 個網格單元 (3-Cell Rule)，
-       迫使 Solver 面對完全解析的幾何梯度懸崖。
-    2. [Scope] 保持 C4 Only：
-       SCAN_PARAMS 僅保留 C4，確保單變量驗證。
-    3. [Invariant] 參數鎖定：保持 C4 的 SlotW=0.5, BiasMax=12.0, RelayBias=12.0, Q_trap=3e19, Alpha=0.00 不變。
-    4. [Invariant] 架構繼承：完全繼承 v1.4.6-016 的代碼邏輯。
+    1. [Strategy] 結構診斷 (Phase Diagnosis)：
+       保持 v1.4.6-017 的物理與離散設定（MegaUltra2, C4 Only, SlotW=0.5）。
+    2. [Feature] 診斷探針 (Diagnostic Probe - Final Polish):
+       - Field Names: 明確區分 phi_full (含邊界) 與 inner (內點) 統計。
+       - DT Snapshots: 記錄 dt_before (步前) 與 dt_after (步後)，消除動態步長帶來的分析歧義。
+       - Stability Margin: 同時計算 M_diag_min_before 與 M_diag_min_after，提供雙重驗證。
+    3. [Invariant] 參數與邏輯鎖定：Solver 與 Harness 主邏輯嚴格不變。
 """
 
 import os
@@ -60,8 +59,7 @@ ni = 1.0e10; ni_vac = 1.0e-20
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-017] GridProbe-MegaUltra2: Nx=640, Ny=320
-# Target dx approx 0.156nm to cross 3-cell threshold for 0.5nm feature
+# [v1.4.6-018] Inherit MegaUltra2 (3-Cell Threshold)
 GRID_LIST = [
     {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
@@ -71,10 +69,7 @@ BASELINE_STEP_LIST = [0.2, 0.4]
 
 # Case Definition (Physics identical to v1.7.12)
 SCAN_PARAMS = [
-    # [v1.4.6-015/016/017] C4 Only
-    
-    # [Case 4] The Wall (Extreme Physics)
-    # [v1.4.6-017] Invariants: SlotW=0.5nm, BiasMax=12.0, Q_trap=3e19, Alpha=0.00
+    # [v1.4.6-018] C4 Only (Inherited)
     {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
@@ -153,6 +148,16 @@ def get_diag_precond(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map,
     diag_pois = -2.0*e_c/(dx**2) - 2.0*e_c/(dy**2)
     term = -(q / Vt) * ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) + jnp.exp(p_c/Vt))
     return (diag_pois + term).flatten()
+
+# [v1.4.6-018 Probe] Split Diagnostics
+@partial(jit, static_argnums=(9, 10))
+def get_diag_components(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
+    phi = reconstruct_phi(phi_in, bias_L, bias_R, nx, ny)
+    p_c = phi[1:-1, 1:-1]
+    e_c = eps_map[1:-1, 1:-1]
+    diag_pois = -2.0*e_c/(dx**2) - 2.0*e_c/(dy**2)
+    term = -(q / Vt) * ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) + jnp.exp(p_c/Vt))
+    return diag_pois.flatten(), term.flatten()
 
 @partial(jit, static_argnums=(10, 11)) 
 def matvec_op_baseline(v, phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
@@ -430,6 +435,10 @@ def warmup_kernels():
                 res = internal_residual(phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
                 res.block_until_ready()
                 
+                # Probe Diagnostic JIT warmup
+                d_p, d_t = get_diag_components(phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
+                d_p.block_until_ready()
+                
                 diag_J = get_diag_precond(phi_init, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx_i, ny_i)
                 diag_J.block_until_ready()
                 
@@ -593,6 +602,9 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         is_first_step = (step_idx == 0)
         budget = MAX_STEP_TIME_FIRST if is_first_step else MAX_STEP_TIME_NORMAL
         
+        # [v1.4.6-018 Probe Fix] Snapshot dt_before
+        dt_before = float(current_dt) if solver_type == 'A1' else 0.0
+        
         if solver_type == 'A1':
              # [Algo v1.4.6-004a] Deprivileged: No is_relay_hard flag
              phi_next, succ, _, res1, rel, iters, extra, last_gmres, next_dt, t_lin, t_res, t_ls, a1_counts, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, current_dt, physics_args, step_time_limit=budget)
@@ -600,6 +612,9 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         else:
              phi_next, succ, _, res1, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
              a1_counts = {'step':0,'noise':0,'sniper':0} 
+        
+        # [v1.4.6-018 Probe Fix] Snapshot dt_after
+        dt_after = float(current_dt) if solver_type == 'A1' else 0.0
         
         dur = time.time() - start
         
@@ -657,12 +672,80 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'baseline_fail_reason': baseline_fail_reason,
             'k_idx': k_idx,
             'k_start': bias_points[0][0] if len(bias_points)>0 else 0, 
-            'dt': float(current_dt) if solver_type == 'A1' else 0.0,
+            'dt': dt_after if solver_type == 'A1' else 0.0, # Log next_dt as standard dt field
+            'dt_before': dt_before, # Probe field
+            'dt_after': dt_after,   # Probe field
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
             'g_tol': g_params[0], 'g_max': g_params[1], 'g_rst': g_params[2],
             'step_budget': budget,
             'is_first_step': is_first_step
         }
+        
+        # [v1.4.6-018 Probe] Calculate and Inject Diagnostic Data (Optimized & Safe)
+        if succ:
+            try:
+                # 1. Phi Stats (Reconstruct to get full field incl BCs)
+                phi_re = reconstruct_phi(phi_next, phi_bc_L, bc_R, nx, ny)
+                p_min = float(jnp.min(phi_re))
+                p_max = float(jnp.max(phi_re))
+                
+                # 2. Nonlinear Term (Inner Points Only - Critical for Safety)
+                # We care about internal nodes where the exponential term is active in the residual.
+                # phi_inner = phi_next (since phi_next is flattened inner vector)
+                # But to be safe and consistent with logic:
+                phi_inner = phi_next 
+                abs_phi_inner = jnp.abs(phi_inner)
+                max_abs_phi_inner = float(jnp.max(abs_phi_inner))
+                
+                # Log-domain metric (Stable)
+                log_max_exp = max_abs_phi_inner / Vt
+                
+                # Clipped Exp metric (Safe)
+                # Cap at 700 to avoid Inf (exp(709) is float64 limit)
+                arg_clipped = min(log_max_exp, 700.0)
+                max_exp_val = float(np.exp(arg_clipped))
+
+                # 3. Diag J Stats
+                d_pois, d_term = get_diag_components(phi_next, phi_bc_L, bc_R, *physics_args)
+                d_total = d_pois + d_term
+                
+                row['phi_full_min'] = p_min
+                row['phi_full_max'] = p_max
+                row['log_max_exp_inner'] = log_max_exp 
+                row['max_exp_term_inner'] = max_exp_val
+                
+                row['diag_J_min'] = float(jnp.min(d_total))
+                row['diag_J_max'] = float(jnp.max(d_total))
+                row['diag_J_med'] = float(jnp.median(d_total)) 
+                
+                row['diag_pois_min'] = float(jnp.min(d_pois))
+                row['diag_pois_max'] = float(jnp.max(d_pois))
+                
+                row['diag_term_min'] = float(jnp.min(d_term))
+                row['diag_term_max'] = float(jnp.max(d_term))
+                
+                # 4. A1 Specific: M_diag_min (Double Check)
+                if solver_type == 'A1':
+                    # Check margin with dt_before (start of step)
+                    if dt_before > 0:
+                        m_diag_b = (1.0/dt_before) - d_total
+                        row['M_diag_min_before'] = float(jnp.min(m_diag_b))
+                    else:
+                        row['M_diag_min_before'] = np.nan
+                        
+                    # Check margin with dt_after (end of step suggestion)
+                    if dt_after > 0:
+                        m_diag_a = (1.0/dt_after) - d_total
+                        row['M_diag_min_after'] = float(jnp.min(m_diag_a))
+                    else:
+                        row['M_diag_min_after'] = np.nan
+                else:
+                    row['M_diag_min_before'] = np.nan
+                    row['M_diag_min_after'] = np.nan
+
+            except Exception as e:
+                print(f"    [Probe Error] {e}")
+        
         if relay_meta:
             row['relay_target'] = relay_meta.get('relay_target')
             row['relay_bias_baseline_snapped'] = relay_meta.get('relay_bias_baseline_snapped')
@@ -692,7 +775,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-017 (DISCRETIZATION BREAKTHROUGH: MEGAULTRA2 - 3-CELL THRESHOLD) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-018 (STRUCTURAL DIAGNOSIS: RIGIDITY PROBE - C4 ONLY) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -839,10 +922,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-017_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-017_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-018_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-018_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-017_FullLog.csv, Stress_v1.4.6-017_Summary.csv")
+    print("Saved: Stress_v1.4.6-018_FullLog.csv, Stress_v1.4.6-018_Summary.csv")
 
 if __name__ == "__main__":
     main()
