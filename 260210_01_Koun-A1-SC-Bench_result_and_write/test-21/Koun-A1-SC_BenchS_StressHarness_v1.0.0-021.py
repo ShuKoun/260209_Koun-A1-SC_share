@@ -1,18 +1,20 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-020.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-020 (結構破壞: 邊界耦合穿刺 - Refined)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-020 (Structure Breaking: Boundary-Coupled Puncture - Refined)
-版本號 (Version): Harness v1.4.6-020
-前置版本 (Prev Version): Harness v1.4.6-019
+文件名 (Filename): BenchS_StressHarness_v1.4.6-021.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-021 (物理破壞: 屏蔽崩潰 - Screening-Break)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-021 (Physics Breaking: Screening-Break Probe)
+版本號 (Version): Harness v1.4.6-021
+前置版本 (Prev Version): Harness v1.4.6-020
 
 變更日誌 (Changelog):
-    1. [Strategy] 邊界耦合穿刺 (Boundary-Coupled Puncture)：
-       將真空隙中心移至 1.0 * dx (緊貼左邊界)。
-       目標：強制邊界驅動電壓 (12V) 直接跨越真空隙注入內點，消除 Silicon Buffer 的屏蔽效應。
-    2. [Robustness] 動態幾何計算：
-       setup_materials 不再硬編碼 nx/ny，改由 X.shape 動態推導 dx，防止網格調整導致的幾何漂移。
-    3. [Invariant] 繼承 v019：
-       保持 MegaUltra2 網格、C4 Only 參數、全貫穿槽高 (slot_h=2Ly)、以及完整的診斷探針。
+    1. [Strategy] 物理屏蔽破壞 (Screening-Break)：
+       幾何手段 (v015-v020) 已窮盡，轉向物理參數攻擊。
+       大幅降低摻雜濃度以削弱 Debye 屏蔽效應，迫使邊界電壓穿透至器件內部。
+    2. [Modification] Doping Collapse：
+       Case C4:
+       - N_high: 1e21 -> 1e17
+       - N_low:  1e17 -> 1e13
+    3. [Invariant] 繼承 v020：
+       保持 MegaUltra2 網格、邊界耦合穿刺幾何 (x_center=dx)、SlotW=0.5nm、以及完整的結構診斷探針。
 """
 
 import os
@@ -59,7 +61,7 @@ ni = 1.0e10; ni_vac = 1.0e-20
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-020] Inherit MegaUltra2
+# [v1.4.6-021] Inherit MegaUltra2
 GRID_LIST = [
     {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
@@ -69,8 +71,11 @@ BASELINE_STEP_LIST = [0.2, 0.4]
 
 # Case Definition
 SCAN_PARAMS = [
-    # [v1.4.6-020] C4 Only (Inherited)
-    {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
+    # [v1.4.6-021] C4 Only - Screening Break
+    # N_high: 1e21 -> 1e17
+    # N_low:  1e17 -> 1e13
+    # Invariants: SlotW=0.5, BiasMax=12, Q_trap=3e19
+    {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e17, 'N_low': 1e13, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
@@ -361,17 +366,14 @@ class KounA1Solver:
 # ============================================================================
 def setup_materials(X, Y, params):
     slot_w = params['SlotW_nm'] * 1e-7 
-    # [v1.4.6-020] Boundary-Coupled Puncture
+    # [v1.4.6-020/021] Boundary-Coupled Puncture
     slot_h = Ly * 2.0 
     y_center = 0.7 * Ly 
     
     # [v1.4.6-020] Shifted Vac Center to Left Boundary
-    # Dynamic dx calculation
     ny_in, nx_in = X.shape 
     nx = X.shape[1]
     dx = Lx / (nx - 1)
-    
-    # Force vacuum to touch boundary (1.0 * dx)
     x_center_shifted = 1.0 * dx
     
     mask_vac = (jnp.abs(X - x_center_shifted) < slot_w/2) & (jnp.abs(Y - y_center) < slot_h/2)
@@ -786,7 +788,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-020 (STRUCTURE BREAKING: BOUNDARY-COUPLED PUNCTURE - REFINED) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-021 (PHYSICS BREAKING: SCREENING-BREAK PROBE - C4 ONLY) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -933,10 +935,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-020_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-020_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-021_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-021_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-020_FullLog.csv, Stress_v1.4.6-020_Summary.csv")
+    print("Saved: Stress_v1.4.6-021_FullLog.csv, Stress_v1.4.6-021_Summary.csv")
 
 if __name__ == "__main__":
     main()
