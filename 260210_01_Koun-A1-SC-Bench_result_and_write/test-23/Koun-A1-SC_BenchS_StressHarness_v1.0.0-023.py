@@ -1,19 +1,20 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-022.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-022 (物理破壞: 載流子抑制 - Carrier-Suppression)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-022 (Physics Breaking: Carrier-Suppression Probe)
-版本號 (Version): Harness v1.4.6-022
-前置版本 (Prev Version): Harness v1.4.6-021
+文件名 (Filename): BenchS_StressHarness_v1.4.6-023.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-023 (物理破壞: 解耦載流子抑制 - Decoupled)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-023 (Physics Breaking: Decoupled Carrier Suppression)
+版本號 (Version): Harness v1.4.6-023
+前置版本 (Prev Version): Harness v1.4.6-022
 
 變更日誌 (Changelog):
-    1. [Strategy] 載流子抑制 (Carrier-Suppression)：
-       v021 降低摻雜無效，診斷顯示屏蔽效應由本徵載流子指數項主導。
-       大幅削減 ni 以拆除最後的物理屏蔽牆。
-    2. [Modification] Intrinsic Carrier Collapse：
-       - ni: 1.0e10 -> 1.0e4 (Down 6 orders)
-       - ni_vac: 1.0e-20 -> 1.0e-26 (Sync down)
-    3. [Invariant] 繼承 v021：
-       保持 MegaUltra2 網格、邊界耦合穿刺幾何、低摻雜 C4 配置、以及診斷探針。
+    1. [Strategy] 解耦載流子抑制 (Decoupled Carrier Suppression)：
+       v022 降低 ni 被邊界條件的自適應抬升所抵消。
+       v023 將邊界參考 ni 與物理實際 ni 解耦，打破這種自適應平衡。
+    2. [Modification] Parameter Splitting：
+       - ni_bc = 1.0e10 (用於計算邊界電勢，保持 BC 不變)
+       - ni_phys = 1.0e4 (用於 ni_map，實際削減載流子)
+       - ni_vac = 1.0e-26 (保持低值)
+    3. [Invariant] 繼承 v022：
+       保持 MegaUltra2 網格、邊界耦合穿刺幾何、C4 Only、探針邏輯。
 """
 
 import os
@@ -56,14 +57,15 @@ else:
 q = 1.602e-19; kb = 1.38e-23; T = 300.0; eps_0 = 8.85e-14
 Vt = (kb * T) / q
 
-# [v1.4.6-022] Carrier Suppression (The Breaker)
-ni = 1.0e4      # Old: 1.0e10
-ni_vac = 1.0e-26 # Old: 1.0e-20
+# [v1.4.6-023] Decoupled Parameters
+ni_bc = 1.0e10    # Reference for Boundary Conditions (Frozen)
+ni_phys = 1.0e4   # Actual Physics (Collapsed)
+ni_vac = 1.0e-26  # Vacuum (Synced with phys scale or kept low)
 
 Lx = 1.0e-5; Ly = 0.5e-5
 
 # [Stress Axis 1] Grid Density
-# [v1.4.6-022] Inherit MegaUltra2
+# [v1.4.6-023] Inherit MegaUltra2
 GRID_LIST = [
     {'Nx': 640, 'Ny': 320, 'Tag': 'MegaUltra2'}
 ]
@@ -73,7 +75,7 @@ BASELINE_STEP_LIST = [0.2, 0.4]
 
 # Case Definition
 SCAN_PARAMS = [
-    # [v1.4.6-022] C4 Only (Inherited from v021)
+    # [v1.4.6-023] C4 Only (Inherited)
     # SlotW=0.5, BiasMax=12, Q_trap=3e19, Low Doping (1e17/1e13)
     {'CaseID': 'C4', 'SlotW_nm': 0.5, 'N_high': 1e17, 'N_low': 1e13, 'BiasMax': 12.0, 'Q_trap': 3.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
 ]
@@ -383,7 +385,8 @@ def setup_materials(X, Y, params):
     
     N_dop = (jnp.where(X < Lx/2, params['N_high'], params['N_low']) * mask_si)
     
-    ni_map = mask_si * ni + mask_vac * ni_vac
+    # [v1.4.6-023] Decoupled Carrier Suppression: Use ni_phys
+    ni_map = mask_si * ni_phys + mask_vac * ni_vac
     Q_trap_vol = params.get('Q_trap', 0.0)
     Q_trap_map = mask_vac * Q_trap_vol
     
@@ -420,8 +423,9 @@ def warmup_kernels():
             X, Y, dx, dy = setup_grid(nx_i, ny_i)
             eps_map, N_dop, ni_map, Q_trap_map = setup_materials(X, Y, params)
             
-            phi_bc_L = Vt * jnp.log(params['N_high']/ni)
-            phi_bc_R_phys = Vt * jnp.log(params['N_low']/ni)
+            # [v1.4.6-023] Decoupled: Use ni_bc for boundary conditions
+            phi_bc_L = Vt * jnp.log(params['N_high']/ni_bc)
+            phi_bc_R_phys = Vt * jnp.log(params['N_low']/ni_bc)
             alpha = params.get('Alpha', 0.0)
             phi_bc_R_base = phi_bc_L + alpha * (phi_bc_R_phys - phi_bc_L)
             
@@ -521,8 +525,9 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     eps_map, N_dop, ni_map, Q_trap_map = setup_materials(X, Y, params)
     physics_args = (eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny)
     
-    phi_bc_L = Vt * jnp.log(params['N_high']/ni)
-    phi_bc_R_phys = Vt * jnp.log(params['N_low']/ni)
+    # [v1.4.6-023] Decoupled: Use ni_bc for boundary conditions
+    phi_bc_L = Vt * jnp.log(params['N_high']/ni_bc)
+    phi_bc_R_phys = Vt * jnp.log(params['N_low']/ni_bc)
     alpha = params.get('Alpha', 0.0)
     phi_bc_R_base = phi_bc_L + alpha * (phi_bc_R_phys - phi_bc_L)
     
@@ -788,7 +793,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-022 (PHYSICS BREAKING: CARRIER-SUPPRESSION PROBE - C4 ONLY) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-023 (PHYSICS BREAKING: DECOUPLED CARRIER-SUPPRESSION - C4 ONLY) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -935,10 +940,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-022_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-022_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-023_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-023_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-022_FullLog.csv, Stress_v1.4.6-022_Summary.csv")
+    print("Saved: Stress_v1.4.6-023_FullLog.csv, Stress_v1.4.6-023_Summary.csv")
 
 if __name__ == "__main__":
     main()
