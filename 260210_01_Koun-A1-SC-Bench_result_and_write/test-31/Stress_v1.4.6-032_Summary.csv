@@ -1,0 +1,7 @@
+case_id,grid,base_step,solver,max_bias,fail_reason,fail_class,total_time,relay_target,relay_bias_baseline_snapped,relay_delta,relay_type
+C4_Q1e20,MegaUltra2,0.2,Baseline_Diag,0.0,NONE,CONV,23.501940488815308,12.0,12.0,0.0,
+C4_Q1e20,MegaUltra2,0.2,A1,0.0,MAX_ITER,BOOT_FAIL,62.515132665634155,,,,BOOTSTRAP_ANCHOR
+C4_Q3e20,MegaUltra2,0.2,Baseline_Diag,0.0,NONE,CONV,16.232697010040283,12.0,12.0,0.0,
+C4_Q3e20,MegaUltra2,0.2,A1,0.0,MAX_ITER,BOOT_FAIL,55.79710078239441,,,,BOOTSTRAP_ANCHOR
+C4_Q1e21,MegaUltra2,0.2,Baseline_Diag,0.0,NONE,CONV,14.518560886383057,12.0,12.0,0.0,
+C4_Q1e21,MegaUltra2,0.2,A1,0.0,MAX_ITER,BOOT_FAIL,55.496217489242554,,,,BOOTSTRAP_ANCHOR

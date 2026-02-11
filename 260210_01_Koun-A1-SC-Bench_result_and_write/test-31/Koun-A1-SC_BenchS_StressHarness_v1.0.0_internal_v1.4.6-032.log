@@ -1,0 +1,46 @@
+--- Environment Hardening Applied ---
+XLA_FLAGS: --xla_gpu_enable_command_buffer=
+MEM_FRACTION: .35
+-------------------------------------
+[14:38:55] JAX Device Check: [cuda(id=0)]
+SUCCESS: JAX is running on GPU.
+
+>>> JIT WARMUP: Compiling Isomorphic Operators for all Grids & Cases...
+  [Warmup Grid] MegaUltra2 (640x320)... [Biases: ['0.000', '12.000']]  Done (3.35s)
+ [Biases: ['0.000', '12.000']]  Done (2.34s)
+ [Biases: ['0.000', '12.000']]  Done (2.27s)
+>>> JIT WARMUP COMPLETE.
+
+=== BENCHMARK S: STRESS HARNESS v1.4.6-032 (UNCONDITIONAL AUTOPSY & ZERO-BIAS SWEEP - FIXED) ===
+Grid List: ['MegaUltra2']
+Step List: [0.2]
+Time Budget: Anchor=240.0s (Focus on 0.0V)
+
+>>> Stress Group: MegaUltra2 | Step=0.2V
+  > Case: C4_Q1e20 (Q_trap=1.0e+20)
+    [Strategy] Baseline Diag Check (0.0V, 100 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Anchor Only: 0.0V)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] A1 Result: FAIL (MAX_ITER)
+  > Case: C4_Q3e20 (Q_trap=3.0e+20)
+    [Strategy] Baseline Diag Check (0.0V, 100 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Anchor Only: 0.0V)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] A1 Result: FAIL (MAX_ITER)
+  > Case: C4_Q1e21 (Q_trap=1.0e+21)
+    [Strategy] Baseline Diag Check (0.0V, 100 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Anchor Only: 0.0V)
+    !!! FAILED at 0.00V (MAX_ITER)
+    [Strategy] A1 Result: FAIL (MAX_ITER)
+
+=== STRESS TEST COMPLETE ===
+Saved: Stress_v1.4.6-032_FullLog.csv, Stress_v1.4.6-032_Summary.csv

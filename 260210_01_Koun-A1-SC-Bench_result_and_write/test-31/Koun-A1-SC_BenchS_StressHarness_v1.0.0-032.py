@@ -1,19 +1,19 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-029.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-029 (物理加固與邏輯重構)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-029 (Physics Hardening & Logic Consolidation)
-版本號 (Version): Harness v1.4.6-029
-前置版本 (Prev Version): Harness v1.4.6-028
+文件名 (Filename): BenchS_StressHarness_v1.4.6-032.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-032 (無條件驗屍與零偏壓掃描 - 修正版)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-032 (Unconditional Autopsy & Zero-Bias Sweep - Fixed)
+版本號 (Version): Harness v1.4.6-032
+前置版本 (Prev Version): Harness v1.4.6-031 (Broken)
 
 變更日誌 (Changelog):
-    1. [Physics] Hardening:
-       - Q_trap 翻倍至 6.0e19 (原 3.0e19)。
-       - 目標：擊穿 Baseline (Newton) 的收斂盆地 (Basin of Attraction)，創造 "Newton Kill Zone"。
-    2. [Logic] A1 Consolidation:
-       - 移除 A/B 測試，回歸標準算子符號 (Matrix=-J, RHS=+res)。
-       - Force Step 邏輯優化：基於連續失敗次數 (Threshold=5) 觸發，並統一使用 max_abs 裁剪。
-    3. [Budget] Anchor Budget:
-       - 保持 Anchor 階段 240s 的寬裕預算。
+    1. [Fix] NameError:
+       - 恢復缺失的 A1_PARAMS 定義，修復 warmup_kernels 中的引用錯誤。
+    2. [Strategy] Unconditional Autopsy:
+       - 對每個 Q_trap Case，首先強制運行 Baseline_Diag (max_iter=100) @ 0.0V。
+    3. [Strategy] Zero-Bias Focus:
+       - 僅測試 0.0V Anchor 點。
+    4. [Physics] Sweep Range:
+       - Q_trap: 1e20, 3e20, 1e21 (對數級掃描)。
 """
 
 import os
@@ -69,17 +69,32 @@ GRID_LIST = [
 ]
 
 # [Stress Axis 2] Baseline Step Size
-BASELINE_STEP_LIST = [0.2, 0.4]
+BASELINE_STEP_LIST = [0.2]
 
-# Case Definition
-SCAN_PARAMS = [
-    # [v1.4.6-029] Physics Hardening: Q_trap = 6.0e19
-    {'CaseID': 'C4_Hard', 'SlotW_nm': 0.5, 'N_high': 1e17, 'N_low': 1e13, 'BiasMax': 12.0, 'Q_trap': 6.0e19, 'Alpha': 0.00, 'RelayBias': 12.0, 'A1_Step': 0.05},
-]
+# [v1.4.6-032] Q_trap Sweep List
+Q_TRAP_LEVELS = [1.0e20, 3.0e20, 1.0e21]
+
+# Case Construction
+SCAN_PARAMS = []
+for qt in Q_TRAP_LEVELS:
+    # Use log-style tag to avoid '+' in filename
+    log_q = int(np.log10(qt))
+    tag = f"C4_Q1e{log_q}"
+    if abs(qt - 3e20) < 1e18: tag = f"C4_Q3e{log_q}" 
+    
+    SCAN_PARAMS.append({
+        'CaseID': tag, 
+        'SlotW_nm': 0.5, 
+        'N_high': 1e17, 
+        'N_low': 1e13, 
+        'BiasMax': 12.0, 
+        'Q_trap': qt, 
+        'Alpha': 0.00, 
+        'RelayBias': 12.0, 
+        'A1_Step': 0.05
+    })
 
 # [Ops] Adaptive Budgeting
-MAX_STEP_TIME_FIRST = 60.0  
-MAX_STEP_TIME_NORMAL = 30.0 
 MAX_STEP_TIME_ANCHOR = 240.0 
 
 # [Algo] Coarse-to-Fine Constants
@@ -96,7 +111,7 @@ BASELINE_DIAG_PARAMS = {
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
-# Standard A1 Params
+# [v1.4.6-032] Restored A1_PARAMS for Warmup Compatibility
 A1_PARAMS = {
     'gmres_tol': 1e-1, 'gmres_maxiter': 30, 'gmres_restart': 5,
     'dt_reset': False, 'max_outer_iter': 50,
@@ -107,7 +122,6 @@ A1_PARAMS = {
     'mode': 'NORMAL'
 }
 
-# Bootstrap Anchor Params
 A1_BOOT_PARAMS = {
     'gmres_tol': 3e-2,      
     'gmres_maxiter': 60,    
@@ -118,11 +132,11 @@ A1_BOOT_PARAMS = {
     'dt_max': 0.1,          
     'dt_growth_cap': 1.2,   
     'dt_shrink_noise': 0.5,
-    'mode': 'BOOT' # Trigger Extended Budget
+    'mode': 'BOOT' 
 }
 
 # ============================================================================
-# 1. Kernels (JIT) - Standard Operators (Reverted to Base)
+# 1. Kernels (JIT) - Standard Operators
 # ============================================================================
 @jit
 def harmonic_mean(e1, e2): return 2.0 * e1 * e2 / (e1 + e2 + 1e-300)
@@ -190,11 +204,9 @@ def matvec_op_baseline(v, phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap
     _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny), (phi_in,), (v,))
     return Jv
 
-# [v1.4.6-029] Standard A1 Operator (Reverted)
 @partial(jit, static_argnums=(12, 13)) 
 def matvec_op_a1(v, phi_in, dt_inv, M_inv, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny):
     _, Jv = jvp(lambda p: internal_residual(p, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, dx, dy, nx, ny), (phi_in,), (v,))
-    # A = dt_inv * I - J  (Standard)
     Av = v * dt_inv - Jv 
     return M_inv * Av    
 
@@ -290,7 +302,8 @@ class KounA1Solver:
         phi = phi_init
         
         cnt_step = 0; cnt_noise = 0; cnt_sniper = 0
-        cnt_consecutive_fail = 0 # [v1.4.6-029] Track fails
+        cnt_consecutive_fail = 0 
+        cnt_force_step = 0 
         
         start_time = time.time()
         t_lin = 0.0; t_ls = 0.0; t_res = 0.0
@@ -305,12 +318,12 @@ class KounA1Solver:
         norm = norm_init
         t_res += time.time() - t0
         
-        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
+        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'force_step':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
         captured_g_params = (self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart'])
 
         for k in range(self.params['max_outer_iter']):
             if time.time() - start_time > step_time_limit:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "TIMEOUT", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             if k > 0:
@@ -323,7 +336,7 @@ class KounA1Solver:
             
             if norm < 1e-4: 
                 rel = (norm_init - norm)/(norm_init+1e-12)
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, True, norm_init, norm, rel, k, f"CONV({cnt_step}/{cnt_noise}/{cnt_sniper})", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             t0 = time.time()
@@ -341,7 +354,7 @@ class KounA1Solver:
                                  dx=physics_args[4], dy=physics_args[5], 
                                  nx=nx, ny=ny)
             
-            RHS = M_inv * res # Standard +res
+            RHS = M_inv * res 
             
             tol_g, max_g, rst_g = self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart']
             captured_g_params = (tol_g, max_g, rst_g)
@@ -351,7 +364,7 @@ class KounA1Solver:
                 d.block_until_ready()
                 last_gmres_info = info
             except Exception as e:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "GMRES_EXCEPT", -1, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             t_lin += time.time() - t0
@@ -373,7 +386,7 @@ class KounA1Solver:
             
             if status != "FAIL":
                 phi = phi_next
-                cnt_consecutive_fail = 0 # Reset fail count
+                cnt_consecutive_fail = 0 
                 
                 rel_improve = (merit - merit_new) / (merit + 1e-12)
                 if status == "STEP":
@@ -390,13 +403,11 @@ class KounA1Solver:
             else:
                 cnt_consecutive_fail += 1
                 
-                # [v1.4.6-029] Force Step Logic (Consecutive Fail Based)
                 do_force_attempt = False
-                if cnt_consecutive_fail >= 5: # Threshold for force step
+                if cnt_consecutive_fail >= 5: 
                     do_force_attempt = True
                 
                 if do_force_attempt:
-                    # Attempt tiny step to check direction validity
                     alpha_force = 1e-4
                     step = alpha_force * d
                     if jnp.max(jnp.abs(step)) > 0.5: step *= (0.5 / jnp.max(jnp.abs(step)))
@@ -405,27 +416,25 @@ class KounA1Solver:
                     merit_force = float(merit_loss(phi_try, bias_L, bias_R, *physics_args))
                     
                     if merit_force < merit:
-                        # Gradient was correct, just too big or unlucky
                         status = "FORCE_STEP"
-                        phi = phi_try # Accept it
-                        cnt_step += 1 
-                        self.dt = dt_floor # Reset DT to floor to keep trying
+                        phi = phi_try 
+                        cnt_force_step += 1 
+                        self.dt = dt_floor 
                         cnt_consecutive_fail = 0
                     else:
-                        # Gradient is truly wrong, collapse
-                        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                         return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
                 else:
                     self.dt *= 0.2
-                    if self.dt < 1e-9: # Safety floor
-                         a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                    if self.dt < 1e-9: 
+                         a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                          return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             self.dt = min(self.dt, self.params['dt_max'])
             dt_min_seen = min(dt_min_seen, self.dt)
             dt_max_seen = max(dt_max_seen, self.dt)
 
-        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
         return phi, False, norm_init, norm, 0.0, k, "MAX_ITER", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
 # ============================================================================
@@ -582,34 +591,19 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     
     step_val = base_step if 'Baseline' in solver_type else params['A1_Step'] 
     
+    # [v1.4.6-031] Zero-Bias Focus (Single Point)
     bias_points = []
     
     if 'A1' in solver_type:
+        # Just Anchor 0.0
         k_start = int(np.round(start_bias / step_val))
-        n_steps_sprint = int(np.round(a1_span / step_val))
-        k_end = k_start + n_steps_sprint
-        print(f" (Sprint: {n_steps_sprint} steps)")
+        print(f" (Anchor Only: 0.0V)")
         bias_points.append((k_start, k_start*step_val, 0.0))
-        for k in range(k_start + 1, k_end + 1):
-            bias_points.append((k, k * step_val, step_val))
     else:
-        if capture_k is not None:
-            k_target = capture_k
-        else:
-            k_target = int(np.floor(stop_bias / step_val + 1e-9))
-        k_switch = max(0, k_target - FINE_BUFFER)
+        # Just Anchor 0.0
         k_curr = 0
         bias_points.append((k_curr, k_curr * step_val, 0.0))
-        while k_curr < k_switch:
-            k_next = min(k_curr + COARSE_STRIDE, k_switch)
-            if k_next == k_curr: break
-            step_size_eff = (k_next - k_curr) * step_val
-            k_curr = k_next
-            bias_points.append((k_curr, k_curr * step_val, step_size_eff))
-        while k_curr < k_target:
-            k_curr += 1
-            bias_points.append((k_curr, k_curr * step_val, step_val))
-        print(f"{k_target * step_val:.2f}V (K-Space C2F)")
+        print(f" (Anchor Only: 0.0V)")
 
     results = []
     last_phi = phi_init
@@ -617,8 +611,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     fail_reason = "NONE"
     captured_phi = None 
     n_steps_sprint = 0 
-    if 'A1' in solver_type: n_steps_sprint = int(np.round(a1_span / step_val))
-
+    
     is_relay_run = ('A1' in solver_type and init_phi is not None)
     
     for step_idx, (k_idx, bias_val, current_step_size) in enumerate(bias_points):
@@ -627,13 +620,8 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         start = time.time()
         is_first_step = (step_idx == 0)
         
-        # [v1.4.6-027] Explicit Budget Trigger
-        budget = MAX_STEP_TIME_NORMAL
-        if is_first_step:
-            if 'A1' in solver_type and params_to_use.get('mode') == 'BOOT':
-                budget = MAX_STEP_TIME_ANCHOR
-            else:
-                budget = MAX_STEP_TIME_FIRST
+        # [v1.4.6-031] Explicit Budget Trigger
+        budget = MAX_STEP_TIME_ANCHOR
         
         dt_before = float(current_dt) if 'A1' in solver_type else 0.0
         
@@ -642,7 +630,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
              current_dt = next_dt
         else:
              phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
-             a1_counts = {'step':0,'noise':0,'sniper':0, 'dt_min':0.0, 'dt_max':0.0} 
+             a1_counts = {'step':0,'noise':0,'sniper':0, 'force_step':0, 'dt_min':0.0, 'dt_max':0.0} 
         
         dt_after = float(current_dt) if 'A1' in solver_type else 0.0
         dur = time.time() - start
@@ -701,6 +689,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'a1_step': a1_counts.get('step', 0),
             'a1_noise': a1_counts.get('noise', 0),
             'a1_sniper': a1_counts.get('sniper', 0),
+            'a1_force_step': a1_counts.get('force_step', 0), # [v1.4.6-030] New Field
             'last_gmres_info': last_gmres, 
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
             'g_tol': g_params[0], 'g_max': g_params[1], 'g_rst': g_params[2],
@@ -731,7 +720,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             row['diag_term_min'] = float(jnp.min(d_term))
             row['diag_term_max'] = float(jnp.max(d_term))
             if 'A1' in solver_type:
-                # [v1.4.6-029] Reverted to Standard A1
+                # [v1.4.6-030] Standard Diag
                 if dt_before > 0:
                     m_diag_b = (1.0/dt_before) - d_total 
                     row['M_diag_min_before'] = float(jnp.min(m_diag_b))
@@ -773,10 +762,10 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-029 (PHYSICS HARDENING & LOGIC CONSOLIDATION) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-032 (UNCONDITIONAL AUTOPSY & ZERO-BIAS SWEEP - FIXED) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
-    print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s, Normal={MAX_STEP_TIME_NORMAL}s")
+    print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s (Focus on 0.0V)")
     
     for grid_cfg in GRID_LIST:
         for base_step in BASELINE_STEP_LIST:
@@ -784,6 +773,8 @@ def main():
             
             for params in SCAN_PARAMS:
                 case_id = params['CaseID']
+                print(f"  > Case: {case_id} (Q_trap={params['Q_trap']:.1e})")
+                
                 relay_target = params['RelayBias']
                 relay_k = int(np.floor(relay_target / base_step + 1e-9))
                 relay_bias_baseline_snapped = relay_k * base_step
@@ -796,135 +787,92 @@ def main():
                     'relay_delta': snap_delta,
                     'relay_type': 'TARGET' 
                 }
-                print(f"  # RelaySnap: Target={relay_target}V -> {relay_bias_baseline_snapped:.2f}V (Step {base_step}V, Delta {snap_delta:.2e}V)")
-
-                stop_bias_base = relay_bias_baseline_snapped 
                 
-                df_base, last_phi_base, max_bias_base, fail_reason_base, phi_relay, _ = run_sweep_stress(
-                    params, grid_cfg, base_step, 'Baseline', 
-                    start_bias=0.0, stop_bias=stop_bias_base,
-                    capture_k=relay_k, relay_meta=relay_meta
+                # [Strategy v1.4.6-031] Unconditional Autopsy First (The "Real" Baseline)
+                print(f"    [Strategy] Baseline Diag Check (0.0V, 100 iters)...")
+                df_diag, last_phi_base, _, diag_reason, _, _ = run_sweep_stress(
+                    params, grid_cfg, base_step, 'Baseline_Diag',
+                    start_bias=0.0, stop_bias=0.0,
+                    capture_k=None, relay_meta=relay_meta,
+                    solver_params=BASELINE_DIAG_PARAMS 
                 )
-                full_logs.append(df_base)
                 
-                base_fail_class = "NONE"
-                if not df_base.empty:
-                    last_row = df_base.iloc[-1]
-                    if not last_row['is_converged']:
-                        base_fail_class = last_row['fail_class']
-                    else:
-                        base_fail_class = "CONV"
+                base_status = "FAIL"
+                base_fail_class = "NUMERIC_FAIL"
+                base_fail_reason = diag_reason
+                
+                if not df_diag.empty:
+                    if df_diag.iloc[-1]['is_converged']:
+                         base_status = "CONVERGED"
+                         base_fail_class = "CONV"
+                         base_fail_reason = "NONE"
+                         
+                print(f"    [Strategy] Baseline Diag Result: {base_status} ({base_fail_reason})")
+                full_logs.append(df_diag)
                 
                 summary_logs.append({
                     'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
-                    'solver': 'Baseline', 'max_bias': max_bias_base, 'fail_reason': fail_reason_base,
+                    'solver': 'Baseline_Diag', 'max_bias': 0.0, 'fail_reason': base_fail_reason,
                     'fail_class': base_fail_class, 
-                    'total_time': df_base['time'].sum(),
+                    'total_time': df_diag['time'].sum(),
                     'relay_target': relay_target, 
                     'relay_bias_baseline_snapped': relay_bias_baseline_snapped,
                     'relay_delta': snap_delta
                 })
-                
-                # Baseline Autopsy Logic
-                if base_fail_class == "NUMERIC_FAIL" and (max_bias_base == 0.0 or np.isnan(max_bias_base)) and "MAX_ITER" in fail_reason_base:
-                    print(f"    [Strategy] Baseline Autopsy: Retrying 0.0V with {BASELINE_DIAG_PARAMS['max_iter']} iters...")
-                    df_diag, _, _, diag_reason, _, _ = run_sweep_stress(
-                        params, grid_cfg, base_step, 'Baseline_Diag',
-                        start_bias=0.0, stop_bias=0.0,
-                        capture_k=None, relay_meta=relay_meta,
-                        solver_params=BASELINE_DIAG_PARAMS 
-                    )
-                    diag_status = "FAILED"
-                    if not df_diag.empty and df_diag.iloc[-1]['is_converged']:
-                         diag_status = "CONVERGED"
-                    print(f"    [Strategy] Autopsy Result: {diag_status} ({diag_reason})")
-                    full_logs.append(df_diag) 
 
-                is_bootstrap_needed = (phi_relay is None) and (np.isnan(max_bias_base) or max_bias_base == 0.0)
+                # [Strategy v1.4.6-031] A1 Challenge (Only if Baseline failed, or for comparison)
+                # We run A1 regardless to see if it survives where Baseline died, or just to compare.
                 
-                if is_bootstrap_needed:
-                    print(f"    [Strategy] A1 BOOTSTRAP OVERRIDE ACTIVATED.")
-                    print(f"    Baseline died at start. Attempting A1 self-start.")
-                    
-                    print(f"    [Strategy] Step 1: A1 Anchor Check at 0.0V...")
-                    
-                    relay_phi_to_use = last_phi_base 
-                    relay_meta_boot = relay_meta.copy()
-                    relay_meta_boot['relay_type'] = "BOOTSTRAP_ANCHOR"
-                    relay_meta_boot['relay_bias_a1_start'] = 0.0
-                    relay_meta_boot['baseline_fail_class'] = base_fail_class
-                    relay_meta_boot['baseline_fail_reason'] = fail_reason_base
-                    
-                    # Run A1 Standard (v029 Consolidated)
-                    df_a1_anchor, last_phi_anchor, max_bias_anchor, fail_r_anchor, _, _ = run_sweep_stress(
-                        params, grid_cfg, base_step, 'A1',
-                        start_bias=0.0, stop_bias=None,
-                        init_phi=relay_phi_to_use, relay_meta=relay_meta_boot,
-                        a1_span=0.0, 
-                        solver_params=A1_BOOT_PARAMS
-                    )
-                    full_logs.append(df_a1_anchor)
-                    
-                    anchor_success = False
-                    if not df_a1_anchor.empty:
-                        if df_a1_anchor.iloc[-1]['is_converged']:
-                            anchor_success = True
-                            
-                    if anchor_success:
-                        print(f"    [Strategy] Anchor SUCCESS. Step 2: A1 Sprint (0.0 -> 0.5V)...")
-                        relay_meta_sprint = relay_meta.copy()
-                        relay_meta_sprint['relay_type'] = "BOOTSTRAP_SPRINT"
-                        relay_meta_sprint['relay_bias_a1_start'] = 0.0
-                        relay_meta_sprint['baseline_fail_class'] = base_fail_class
-                        relay_meta_sprint['baseline_fail_reason'] = fail_reason_base
-                        
-                        df_a1_sprint, _, max_bias_sprint, fail_r_sprint, _, sprint_n = run_sweep_stress(
-                            params, grid_cfg, base_step, 'A1',
-                            start_bias=0.0, stop_bias=None,
-                            init_phi=last_phi_anchor, 
-                            relay_meta=relay_meta_sprint,
-                            a1_span=0.5,
-                            solver_params=None # Use Standard A1
-                        )
-                        full_logs.append(df_a1_sprint)
-                        
-                        a1_fail_class = "NONE"
-                        if not df_a1_sprint.empty:
-                            last_row = df_a1_sprint.iloc[-1]
-                            if not last_row['is_converged']:
-                                a1_fail_class = last_row['fail_class']
-                            else:
-                                a1_fail_class = "CONV"
+                is_bootstrap_needed = (base_status != "CONVERGED")
+                
+                # Setup A1 run (using Diag result as init if converged, else cold start?)
+                # Actually, A1 Bootstrap usually implies starting from scratch or the same init guess as Baseline.
+                # We use the same init logic (ramp) inside run_sweep_stress if init_phi is None.
+                # But here we want to test "Self-Start", so we pass None (or handle inside).
+                # run_sweep_stress generates ramp if init_phi is None.
+                
+                print(f"    [Strategy] A1 Bootstrap Check (0.0V)...")
+                
+                relay_meta_boot = relay_meta.copy()
+                relay_meta_boot['relay_type'] = "BOOTSTRAP_ANCHOR"
+                relay_meta_boot['relay_bias_a1_start'] = 0.0
+                relay_meta_boot['baseline_fail_class'] = base_fail_class
+                relay_meta_boot['baseline_fail_reason'] = base_fail_reason
+                
+                df_a1_anchor, _, _, fail_r_anchor, _, _ = run_sweep_stress(
+                    params, grid_cfg, base_step, 'A1',
+                    start_bias=0.0, stop_bias=None,
+                    init_phi=None, # Force Ramp Start
+                    relay_meta=relay_meta_boot,
+                    a1_span=0.0, 
+                    solver_params=A1_BOOT_PARAMS
+                )
+                full_logs.append(df_a1_anchor)
+                
+                a1_status = "FAIL"
+                a1_fail_class = "BOOT_FAIL"
+                if not df_a1_anchor.empty:
+                    if df_a1_anchor.iloc[-1]['is_converged']:
+                        a1_status = "CONVERGED"
+                        a1_fail_class = "CONV"
+                
+                print(f"    [Strategy] A1 Result: {a1_status} ({fail_r_anchor})")
 
-                        summary_logs.append({
-                            'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
-                            'solver': 'A1', 'max_bias': max_bias_sprint, 'fail_reason': fail_r_sprint,
-                            'fail_class': a1_fail_class,
-                            'total_time': df_a1_anchor['time'].sum() + df_a1_sprint['time'].sum(),
-                            'relay_target': relay_target, 
-                            'relay_bias_baseline_snapped': 0.0,
-                            'relay_bias_a1_start': 0.0, 
-                            'relay_bias_a1_delta': 0.0,
-                            'relay_delta': snap_delta,
-                            'sprint_n_steps': sprint_n,
-                            'relay_type': 'BOOTSTRAP_SPRINT'
-                        })
-                    else:
-                        print(f"    [Strategy] Anchor FAILED.")
-                        summary_logs.append({
-                            'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
-                            'solver': 'A1', 'max_bias': 0.0, 'fail_reason': fail_r_anchor,
-                            'fail_class': 'BOOTSTRAP_FAIL',
-                            'total_time': df_a1_anchor['time'].sum(),
-                            'relay_type': 'BOOTSTRAP_ANCHOR'
-                        })
+                summary_logs.append({
+                    'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
+                    'solver': 'A1', 'max_bias': 0.0, 
+                    'fail_reason': 'NONE' if a1_status=="CONVERGED" else fail_r_anchor,
+                    'fail_class': a1_fail_class,
+                    'total_time': df_a1_anchor['time'].sum(),
+                    'relay_type': 'BOOTSTRAP_ANCHOR'
+                })
 
                 gc.collect()
 
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-029_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-029_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-032_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-032_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-029_FullLog.csv, Stress_v1.4.6-029_Summary.csv")
+    print("Saved: Stress_v1.4.6-032_FullLog.csv, Stress_v1.4.6-032_Summary.csv")
 
 if __name__ == "__main__":
     main()
