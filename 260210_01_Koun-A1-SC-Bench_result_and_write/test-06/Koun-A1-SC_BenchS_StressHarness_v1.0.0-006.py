@@ -1,21 +1,21 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-005.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-005 (失效分離決戰版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-005 (Failure Separation Showdown)
-版本號 (Version): Harness v1.4.6-005
-前置版本 (Prev Version): Harness v1.4.6-004a
+文件名 (Filename): BenchS_StressHarness_v1.4.6-006-Final-Revised.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-006 (數據邏輯嚴謹版)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-006 (Data Logic Rigor)
+版本號 (Version): Harness v1.4.6-006-Final-Revised
+前置版本 (Prev Version): Harness v1.4.6-006-Final
 
 變更日誌 (Changelog):
-    1. [Strategy] 決戰高壓：將 Case C4 ("The Wall") 的 RelayBias 從 2.5V 大幅提升至 6.0V。
-       目標：強制 Baseline 進入高非線性、高條件數的死亡區域，誘導其發生自然的數值崩潰 (NUMERIC_FAIL)。
-    2. [Invariant] 架構凍結：嚴格保持 v1.4.6-004a 的所有代碼邏輯、數據結構與 Solver 參數不變。
-       依靠 v004a 已驗證的 Early Relay 機制來保證即使 Baseline 提前死亡，A1 仍能接力上場。
+    1. [Data] 邏輯嚴謹化：廢除 TARGET 模式下 Delta=0 的硬編碼，統一使用 (A1_Start - Baseline_Last_Success) 公式計算。
+    2. [Data] 上下文顯式化：在 TARGET 模式下顯式填充 Baseline 的成功狀態 (CONV/NONE/SnappedBias)，不再依賴 max_bias 的隱式語義。
+    3. [Strategy] 偏壓極限：維持 C4 RelayBias = 8.0V (BiasMax)。
+    4. [Invariant] 環境繼承：保留所有 GPU 防禦 (No CUDA Graph, Mem .35) 與去特權算法邏輯。
 """
 
 import os
 import sys
 
-# [Env Adaptation] HARDENED GPU SETTINGS (Inherited from v1.4.6-004a)
+# [Env Adaptation] HARDENED GPU SETTINGS
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer="
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".35"
@@ -72,10 +72,9 @@ SCAN_PARAMS = [
     # Case 3: The Killer
     {'CaseID': 'C3', 'SlotW_nm': 2.0, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 1.0e18, 'Alpha': 0.2, 'RelayBias': 4.0, 'A1_Step': 0.05},
 
-    # [Case 4] The Wall (Extreme Physics) - [v1.4.6-005 Modified]
-    # RelayBias raised to 6.0V to force Baseline into numerical instability region.
-    # Early Relay logic will catch A1 if Baseline fails earlier.
-    {'CaseID': 'C4', 'SlotW_nm': 1.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e18, 'Alpha': 0.15, 'RelayBias': 6.0, 'A1_Step': 0.05},
+    # [Case 4] The Wall (Extreme Physics)
+    # [v1.4.6-006] RelayBias raised to 8.0 (BiasMax)
+    {'CaseID': 'C4', 'SlotW_nm': 1.5, 'N_high': 1e21, 'N_low': 1e17, 'BiasMax': 8.0, 'Q_trap': 3.0e18, 'Alpha': 0.15, 'RelayBias': 8.0, 'A1_Step': 0.05},
 ]
 
 # [Ops] Adaptive Budgeting
@@ -527,6 +526,12 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     if solver_type == 'A1':
         # [Data v1.4.6-004] Force rounding to A1_Step
         k_start = int(np.round(start_bias / step_val))
+        
+        # [Debug v1.4.6-006] Audit check for rounding drift
+        check_bias = k_start * step_val
+        if abs(check_bias - start_bias) > 1e-9:
+            print(f"    [Audit Warning] Rounding drift detected: Start={start_bias:.9f} vs Grid={check_bias:.9f}")
+
         n_steps_sprint = int(np.round(a1_span / step_val))
         k_end = k_start + n_steps_sprint
         print(f" (Sprint: {n_steps_sprint} steps)")
@@ -613,10 +618,20 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             
         is_anchor = (step_idx == 0 and solver_type == 'A1') 
 
-        # [v1.4.6-004a] Tag Propagation
+        # [v1.4.6-006] Unified Normalization
         current_relay_type = relay_meta.get('relay_type', 'NONE') if relay_meta else 'NONE'
-        baseline_fail_class = relay_meta.get('baseline_fail_class', 'N/A') if relay_meta else 'N/A'
-        baseline_last_success = relay_meta.get('baseline_last_success', -1.0) if relay_meta else -1.0
+        
+        # [v1.4.6-006-Final-Revised] Logic Fix: Explicitly define context for both TARGET and EARLY
+        if current_relay_type == 'TARGET':
+             baseline_fail_class = "CONV"
+             # In TARGET, last success IS the snapped relay target
+             baseline_last_success = relay_meta.get('relay_bias_baseline_snapped', -1.0)
+             baseline_fail_reason = "NONE"
+        else:
+             # In EARLY, pass through what we caught from Baseline
+             baseline_fail_class = relay_meta.get('baseline_fail_class', 'N/A') if relay_meta else 'N/A'
+             baseline_last_success = relay_meta.get('baseline_last_success_bias', -1.0) if relay_meta else -1.0
+             baseline_fail_reason = relay_meta.get('baseline_fail_reason', 'N/A') if relay_meta else 'N/A'
 
         row = {
             'solver': solver_type,
@@ -636,8 +651,9 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'is_anchor': is_anchor,
             'is_relay_mode': is_relay_run,
             'relay_type': current_relay_type, 
-            'baseline_fail_class': baseline_fail_class, # [004a]
-            'baseline_last_success': baseline_last_success, # [004a]
+            'baseline_fail_class': baseline_fail_class,
+            'baseline_last_success_bias': baseline_last_success,
+            'baseline_fail_reason': baseline_fail_reason,
             'k_idx': k_idx,
             'k_start': bias_points[0][0] if len(bias_points)>0 else 0, 
             'dt': float(current_dt) if solver_type == 'A1' else 0.0,
@@ -648,7 +664,9 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         }
         if relay_meta:
             row['relay_target'] = relay_meta.get('relay_target')
-            row['relay_snapped'] = relay_meta.get('relay_snapped')
+            row['relay_bias_baseline_snapped'] = relay_meta.get('relay_bias_baseline_snapped')
+            row['relay_bias_a1_start'] = relay_meta.get('relay_bias_a1_start')
+            row['relay_bias_a1_delta'] = relay_meta.get('relay_bias_a1_delta') 
             row['relay_delta'] = relay_meta.get('relay_delta')
             
         results.append(row)
@@ -673,7 +691,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-005 (FAILURE SEPARATION SHOWDOWN) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-006-Final-Revised (DATA RIGOR) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
@@ -688,20 +706,23 @@ def main():
                 # [Integrity] Strict Snapping
                 relay_target = params['RelayBias']
                 relay_k = int(np.floor(relay_target / base_step + 1e-9))
-                relay_bias_snapped = relay_k * base_step
-                snap_delta = relay_bias_snapped - relay_target
+                relay_bias_baseline_snapped = relay_k * base_step
+                snap_delta = relay_bias_baseline_snapped - relay_target
                 
+                # [v1.4.6-006] Clean Relay Meta (Init)
                 relay_meta = {
                     'relay_target': relay_target,
-                    'relay_snapped': relay_bias_snapped,
+                    'relay_bias_baseline_snapped': relay_bias_baseline_snapped,
+                    'relay_bias_a1_start': -1.0, 
+                    'relay_bias_a1_delta': 0.0,
                     'relay_delta': snap_delta,
-                    'relay_type': 'TARGET' # Default
+                    'relay_type': 'TARGET' 
                 }
                 
-                print(f"  # RelaySnap: Target={relay_target}V -> {relay_bias_snapped:.2f}V (Step {base_step}V, Delta {snap_delta:.2e}V)")
+                print(f"  # RelaySnap: Target={relay_target}V -> {relay_bias_baseline_snapped:.2f}V (Step {base_step}V, Delta {snap_delta:.2e}V)")
 
                 # 1. Baseline
-                stop_bias_base = relay_bias_snapped 
+                stop_bias_base = relay_bias_baseline_snapped 
                 
                 df_base, last_phi_base, max_bias_base, fail_reason_base, phi_relay, _ = run_sweep_stress(
                     params, grid_cfg, base_step, 'Baseline', 
@@ -716,32 +737,41 @@ def main():
                     last_row = df_base.iloc[-1]
                     if not last_row['is_converged']:
                         base_fail_class = last_row['fail_class']
+                    else:
+                        base_fail_class = "CONV"
                 
                 summary_logs.append({
                     'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
                     'solver': 'Baseline', 'max_bias': max_bias_base, 'fail_reason': fail_reason_base,
                     'fail_class': base_fail_class, 
                     'total_time': df_base['time'].sum(),
-                    'relay_target': relay_target, 'relay_snapped': relay_bias_snapped, 'relay_delta': snap_delta
+                    'relay_target': relay_target, 
+                    'relay_bias_baseline_snapped': relay_bias_baseline_snapped,
+                    'relay_delta': snap_delta
                 })
                 
-                # [Strategy v1.4.6-004] Early Relay Logic with Snapping
+                # [Strategy v1.4.6-006] Early Relay Logic with Snapping
                 
                 relay_phi_to_use = phi_relay
-                start_bias_a1 = relay_bias_snapped
+                start_bias_a1 = relay_bias_baseline_snapped
                 relay_type = "TARGET"
+                a1_delta = 0.0
+                baseline_last_success_bias_val = relay_bias_baseline_snapped # Default for TARGET
                 
                 if phi_relay is None and not np.isnan(max_bias_base):
                     relay_phi_to_use = last_phi_base
                     
-                    # [Data v1.4.6-004a] Conservative Snapping: Use floor to ensure we don't jump ahead of baseline failure
+                    # [Data v1.4.6-004a] Conservative Snapping
                     a1_step_val = params['A1_Step']
-                    # Using floor + epsilon to be safe
                     k_early = int(np.floor(max_bias_base / a1_step_val + 1e-9))
                     start_bias_a1 = k_early * a1_step_val
                     
                     relay_type = "EARLY"
                     snap_diff = start_bias_a1 - max_bias_base
+                    baseline_last_success_bias_val = max_bias_base
+                    
+                    # [v1.4.6-006-Final-Revised] Unified Delta Calculation
+                    a1_delta = start_bias_a1 - max_bias_base
                     
                     print(f"    [Strategy] Early Relay! Baseline died at {max_bias_base:.4f}V. A1 snapping to {start_bias_a1:.4f}V (Delta {snap_diff:.1e}V)")
                 
@@ -749,13 +779,19 @@ def main():
                     # Update meta for A1 run
                     relay_meta_a1 = relay_meta.copy()
                     relay_meta_a1['relay_type'] = relay_type
+                    relay_meta_a1['relay_bias_a1_start'] = start_bias_a1 
+                    
+                    # [v1.4.6-006-Final-Revised] Explicit Context & Delta for ALL cases
+                    relay_meta_a1['baseline_last_success_bias'] = baseline_last_success_bias_val
+                    relay_meta_a1['relay_bias_a1_delta'] = start_bias_a1 - baseline_last_success_bias_val
                     
                     if relay_type == "EARLY":
-                        relay_meta_a1['relay_snapped'] = start_bias_a1
                         relay_meta_a1['relay_note'] = "EARLY_RELAY"
-                        # [004a] Semantic fields
                         relay_meta_a1['baseline_fail_class'] = base_fail_class
-                        relay_meta_a1['baseline_last_success'] = max_bias_base
+                        relay_meta_a1['baseline_fail_reason'] = fail_reason_base
+                    else:
+                        relay_meta_a1['baseline_fail_class'] = "CONV"
+                        relay_meta_a1['baseline_fail_reason'] = "NONE"
 
                     df_a1, _, max_bias_a1, fail_reason_a1, _, sprint_n = run_sweep_stress(
                         params, grid_cfg, base_step, 'A1',
@@ -770,13 +806,18 @@ def main():
                         last_row = df_a1.iloc[-1]
                         if not last_row['is_converged']:
                             a1_fail_class = last_row['fail_class']
+                        else:
+                            a1_fail_class = "CONV"
 
                     summary_logs.append({
                         'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
                         'solver': 'A1', 'max_bias': max_bias_a1, 'fail_reason': fail_reason_a1,
                         'fail_class': a1_fail_class,
                         'total_time': df_a1['time'].sum(),
-                        'relay_target': relay_target, 'relay_snapped': start_bias_a1,
+                        'relay_target': relay_target, 
+                        'relay_bias_baseline_snapped': relay_bias_baseline_snapped,
+                        'relay_bias_a1_start': start_bias_a1, 
+                        'relay_bias_a1_delta': relay_meta_a1['relay_bias_a1_delta'], # Use updated meta
                         'relay_delta': snap_delta,
                         'sprint_n_steps': sprint_n,
                         'relay_type': relay_type
@@ -787,7 +828,9 @@ def main():
                     summary_logs.append({
                         'case_id': case_id, 'grid': grid_cfg['Tag'], 'base_step': base_step,
                         'solver': 'A1', 'max_bias': -1, 'fail_reason': reason, 'fail_class': 'SKIPPED', 'total_time': 0,
-                        'relay_target': relay_target, 'relay_snapped': relay_bias_snapped, 'relay_delta': snap_delta,
+                        'relay_target': relay_target, 
+                        'relay_bias_baseline_snapped': relay_bias_baseline_snapped, 
+                        'relay_delta': snap_delta,
                         'relay_type': 'NONE'
                     })
                 
@@ -795,10 +838,10 @@ def main():
                 # [Ops v1.4.6] Cache Integrity Lock: jax.clear_caches() REMOVED.
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-005_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-005_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-006-Final-Revised_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-006-Final-Revised_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-005_FullLog.csv, Stress_v1.4.6-005_Summary.csv")
+    print("Saved: Stress_v1.4.6-006-Final-Revised_FullLog.csv, Stress_v1.4.6-006-Final-Revised_Summary.csv")
 
 if __name__ == "__main__":
     main()
