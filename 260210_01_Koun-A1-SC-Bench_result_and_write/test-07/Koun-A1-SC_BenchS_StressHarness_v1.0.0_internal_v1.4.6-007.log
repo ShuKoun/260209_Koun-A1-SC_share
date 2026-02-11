@@ -1,0 +1,67 @@
+--- Environment Hardening Applied ---
+XLA_FLAGS: --xla_gpu_enable_command_buffer=
+MEM_FRACTION: .35
+-------------------------------------
+[06:43:10] JAX Device Check: [cuda(id=0)]
+SUCCESS: JAX is running on GPU.
+
+>>> JIT WARMUP: Compiling Isomorphic Operators for all Grids & Cases...
+  [Warmup Grid] Std (120x60)... [Biases: ['0.000', '6.800', '7.000']]  Done (5.53s)
+ [Biases: ['0.000', '4.000']]  Done (2.18s)
+ [Biases: ['0.000', '8.000']]  Done (2.34s)
+  [Warmup Grid] Dense (180x90)... [Biases: ['0.000', '6.800', '7.000']]  Done (4.49s)
+ [Biases: ['0.000', '4.000']]  Done (2.39s)
+ [Biases: ['0.000', '8.000']]  Done (2.30s)
+>>> JIT WARMUP COMPLETE.
+
+=== BENCHMARK S: STRESS HARNESS v1.4.6-007 (PHYSICS HARDENING B1) ===
+Grid List: ['Std', 'Dense']
+Step List: [0.2, 0.4]
+Time Budget: First=60.0s (Hot), Normal=30.0s
+
+>>> Stress Group: Std | Step=0.2V
+  # RelaySnap: Target=7.0V -> 7.00V (Step 0.2V, Delta 0.00e+00V)
+  > [Baseline] Grid=Std(120x60), Step=0.2V, Range=0.00->...7.00V (K-Space C2F)
+  > [A1] Grid=Std(120x60), Step=0.1V, Range=7.00->... (Sprint: 5 steps)
+  # RelaySnap: Target=4.0V -> 4.00V (Step 0.2V, Delta 0.00e+00V)
+  > [Baseline] Grid=Std(120x60), Step=0.2V, Range=0.00->...4.00V (K-Space C2F)
+  > [A1] Grid=Std(120x60), Step=0.05V, Range=4.00->... (Sprint: 10 steps)
+  # RelaySnap: Target=8.0V -> 8.00V (Step 0.2V, Delta 0.00e+00V)
+  > [Baseline] Grid=Std(120x60), Step=0.2V, Range=0.00->...8.00V (K-Space C2F)
+  > [A1] Grid=Std(120x60), Step=0.05V, Range=8.00->... (Sprint: 10 steps)
+
+>>> Stress Group: Std | Step=0.4V
+  # RelaySnap: Target=7.0V -> 6.80V (Step 0.4V, Delta -2.00e-01V)
+  > [Baseline] Grid=Std(120x60), Step=0.4V, Range=0.00->...6.80V (K-Space C2F)
+  > [A1] Grid=Std(120x60), Step=0.1V, Range=6.80->... (Sprint: 5 steps)
+  # RelaySnap: Target=4.0V -> 4.00V (Step 0.4V, Delta 0.00e+00V)
+  > [Baseline] Grid=Std(120x60), Step=0.4V, Range=0.00->...4.00V (K-Space C2F)
+  > [A1] Grid=Std(120x60), Step=0.05V, Range=4.00->... (Sprint: 10 steps)
+  # RelaySnap: Target=8.0V -> 8.00V (Step 0.4V, Delta 0.00e+00V)
+  > [Baseline] Grid=Std(120x60), Step=0.4V, Range=0.00->...8.00V (K-Space C2F)
+  > [A1] Grid=Std(120x60), Step=0.05V, Range=8.00->... (Sprint: 10 steps)
+
+>>> Stress Group: Dense | Step=0.2V
+  # RelaySnap: Target=7.0V -> 7.00V (Step 0.2V, Delta 0.00e+00V)
+  > [Baseline] Grid=Dense(180x90), Step=0.2V, Range=0.00->...7.00V (K-Space C2F)
+  > [A1] Grid=Dense(180x90), Step=0.1V, Range=7.00->... (Sprint: 5 steps)
+  # RelaySnap: Target=4.0V -> 4.00V (Step 0.2V, Delta 0.00e+00V)
+  > [Baseline] Grid=Dense(180x90), Step=0.2V, Range=0.00->...4.00V (K-Space C2F)
+  > [A1] Grid=Dense(180x90), Step=0.05V, Range=4.00->... (Sprint: 10 steps)
+  # RelaySnap: Target=8.0V -> 8.00V (Step 0.2V, Delta 0.00e+00V)
+  > [Baseline] Grid=Dense(180x90), Step=0.2V, Range=0.00->...8.00V (K-Space C2F)
+  > [A1] Grid=Dense(180x90), Step=0.05V, Range=8.00->... (Sprint: 10 steps)
+
+>>> Stress Group: Dense | Step=0.4V
+  # RelaySnap: Target=7.0V -> 6.80V (Step 0.4V, Delta -2.00e-01V)
+  > [Baseline] Grid=Dense(180x90), Step=0.4V, Range=0.00->...6.80V (K-Space C2F)
+  > [A1] Grid=Dense(180x90), Step=0.1V, Range=6.80->... (Sprint: 5 steps)
+  # RelaySnap: Target=4.0V -> 4.00V (Step 0.4V, Delta 0.00e+00V)
+  > [Baseline] Grid=Dense(180x90), Step=0.4V, Range=0.00->...4.00V (K-Space C2F)
+  > [A1] Grid=Dense(180x90), Step=0.05V, Range=4.00->... (Sprint: 10 steps)
+  # RelaySnap: Target=8.0V -> 8.00V (Step 0.4V, Delta 0.00e+00V)
+  > [Baseline] Grid=Dense(180x90), Step=0.4V, Range=0.00->...8.00V (K-Space C2F)
+  > [A1] Grid=Dense(180x90), Step=0.05V, Range=8.00->... (Sprint: 10 steps)
+
+=== STRESS TEST COMPLETE ===
+Saved: Stress_v1.4.6-007_FullLog.csv, Stress_v1.4.6-007_Summary.csv
