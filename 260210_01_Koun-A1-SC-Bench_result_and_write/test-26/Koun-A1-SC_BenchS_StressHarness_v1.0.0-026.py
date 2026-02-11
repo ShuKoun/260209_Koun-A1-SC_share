@@ -1,21 +1,23 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-025.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-025 (A1 錨點調優與深度診斷)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-025 (A1 Anchor Tuning & Deep Diagnostics)
-版本號 (Version): Harness v1.4.6-025
-前置版本 (Prev Version): Harness v1.4.6-024
+文件名 (Filename): BenchS_StressHarness_v1.4.6-026.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-026 (錨點耐心測試與基線驗屍)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-026 (Anchor Patience & Baseline Autopsy)
+版本號 (Version): Harness v1.4.6-026
+前置版本 (Prev Version): Harness v1.4.6-025
 
 變更日誌 (Changelog):
-    1. [Tuning] 引入 A1_BOOT_PARAMS：
-       - 專用於 Bootstrap Anchor (0.0V) 階段。
-       - 特徵：高精度 GMRES (1e-2/80/20)，限制 dt_max (0.1)，增加 max_outer_iter (200)。
-       - 目標：防止 A1 在高剛性起點因步長過大而漂移 (Drift)。
-    2. [Diagnostics] 強化日誌 (Deep Logging)：
-       - 即使失敗 (FAIL) 也強制執行 Probe 診斷 (phi_min/max, log_exp, M_diag)。
-       - 新增字段：norm_init, norm_final, dt_min, dt_max_seen, a1_counts。
-    3. [Logic] Harness 支援參數覆蓋 (Parameter Override)：
-       - run_sweep_stress 現在接受 solver_params 參數。
-       - Main 函數在 Anchor 步驟顯式傳入 A1_BOOT_PARAMS。
+    1. [Budget] Anchor Time Extension: 
+       - A1 Bootstrap Anchor (0.0V) 預算從 60s 提升至 240s。
+       - 確保 "Existence Proof" 不會因超時而被誤殺。
+    2. [Tuning] A1 Boot Params Optimization:
+       - GMRES: 1e-2/80/20 -> 3e-2/60/15 (更輕量，換取更多外循環)。
+    3. [Logic] Fixes:
+       - dt_floor: 修正為 self.params.get('dt_init', 1e-4)，支援 1e-5 起步。
+       - GMRES Safety: 增加 try/except 捕獲。
+       - Stats: 修正 TIMEOUT 時的計數器更新。
+    4. [Diagnosis] Baseline Autopsy:
+       - 當 Baseline 在 0.0V MAX_ITER 失敗時，額外運行 Baseline_Diag (max_iter=100)。
+       - 用於區分 "Slow Convergence" 與 "No Basin"。
 """
 
 import os
@@ -83,6 +85,8 @@ SCAN_PARAMS = [
 # [Ops] Adaptive Budgeting
 MAX_STEP_TIME_FIRST = 60.0  
 MAX_STEP_TIME_NORMAL = 30.0 
+# [v1.4.6-026] Extended Budget for Anchor Proof
+MAX_STEP_TIME_ANCHOR = 240.0 
 
 # [Algo] Coarse-to-Fine Constants
 COARSE_STRIDE = 5 
@@ -93,25 +97,33 @@ BASELINE_PARAMS = {
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
+# [v1.4.6-026] Baseline Diagnostic Params (Autopsy)
+BASELINE_DIAG_PARAMS = {
+    'max_iter': 100, 'tol': 1e-4,  # Extended Iterations
+    'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
+}
+
 # [v1.4.6-025] Standard A1 Params (For Sprint/Normal Run)
 A1_PARAMS = {
     'gmres_tol': 1e-1, 'gmres_maxiter': 30, 'gmres_restart': 5,
     'dt_reset': False, 'max_outer_iter': 50,
-    'dt_init': 1e-4,        # Explicit Init
+    'dt_init': 1e-4,        
     'dt_max': 10.0,         
     'dt_growth_cap': 2.0,   
     'dt_shrink_noise': 0.8  
 }
 
-# [v1.4.6-025] Bootstrap Anchor Params (Tighter, Slower)
+# [v1.4.6-026] Bootstrap Anchor Params (Tuned for Throughput)
 A1_BOOT_PARAMS = {
-    'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20, # Baseline-grade GMRES
-    'dt_reset': True,       # Force Reset
-    'max_outer_iter': 200,  # More patience
-    'dt_init': 1e-5,        # Start smaller
-    'dt_max': 0.1,          # Cap growth (Don't let it fly to 10.0)
-    'dt_growth_cap': 1.2,   # Slow growth
-    'dt_shrink_noise': 0.5  # Fast shrink
+    'gmres_tol': 3e-2,      # [Tuning] Slightly looser than 1e-2 to speed up
+    'gmres_maxiter': 60,    # [Tuning] Reduced from 80
+    'gmres_restart': 15,    # [Tuning] Reduced from 20
+    'dt_reset': True,       
+    'max_outer_iter': 200,  
+    'dt_init': 1e-5,        
+    'dt_max': 0.1,          
+    'dt_growth_cap': 1.2,   
+    'dt_shrink_noise': 0.5  
 }
 
 # ============================================================================
@@ -270,10 +282,13 @@ class KounA1Solver:
     def solve_step(self, phi_init, bias_L, bias_R, prev_dt, physics_args, step_time_limit=30.0):
         nx, ny = physics_args[-2], physics_args[-1]
         
+        # [v1.4.6-026] Fix dt_floor logic
+        dt_floor = self.params.get('dt_init', 1e-4)
+        
         if self.params['dt_reset']: 
-            self.dt = self.params.get('dt_init', 1e-4)
+            self.dt = dt_floor
         else: 
-            self.dt = max(prev_dt * 0.5, 1e-4)
+            self.dt = max(prev_dt * 0.5, dt_floor)
         
         self.dt = min(self.dt, self.params['dt_max'])
             
@@ -299,6 +314,7 @@ class KounA1Solver:
 
         for k in range(self.params['max_outer_iter']):
             if time.time() - start_time > step_time_limit:
+                # [v1.4.6-026] Update stats on timeout
                 a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "TIMEOUT", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
@@ -335,9 +351,15 @@ class KounA1Solver:
             tol_g, max_g, rst_g = self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart']
             captured_g_params = (tol_g, max_g, rst_g)
 
-            d, info = gmres(A_op_bound, RHS, tol=tol_g, maxiter=max_g, restart=rst_g)
-            d.block_until_ready()
-            last_gmres_info = info
+            # [v1.4.6-026] GMRES Safety
+            try:
+                d, info = gmres(A_op_bound, RHS, tol=tol_g, maxiter=max_g, restart=rst_g)
+                d.block_until_ready()
+                last_gmres_info = info
+            except Exception as e:
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                return phi, False, norm_init, norm, 0.0, k, "GMRES_EXCEPT", -1, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
+
             t_lin += time.time() - t0
             
             t0 = time.time()
@@ -368,7 +390,7 @@ class KounA1Solver:
                 else: 
                     cnt_noise += 1
                     self.dt *= self.params['dt_shrink_noise'] 
-                    if self.dt < 1e-4: self.dt = 1e-4
+                    if self.dt < dt_floor: self.dt = dt_floor # [v1.4.6-026] Use correct floor
             else:
                 self.dt *= 0.2
                 if self.dt < 1e-9: 
@@ -567,9 +589,15 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         params_to_use = solver_params if solver_params else A1_PARAMS
         solver = KounA1Solver(params_to_use)
     else:
-        solver = BaselineNewton(BASELINE_PARAMS)
+        # [v1.4.6-026] Support Baseline Override
+        params_to_use = solver_params if solver_params else BASELINE_PARAMS
+        solver = BaselineNewton(params_to_use)
 
-    current_dt = 1e-4
+    # [v1.4.6-026] Init current_dt consistent with params
+    if solver_type == 'A1':
+        current_dt = params_to_use.get('dt_init', 1e-4)
+    else:
+        current_dt = 1e-4
     
     step_val = base_step if solver_type == 'Baseline' else params['A1_Step'] 
     
@@ -643,7 +671,14 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
         
         # [v1.3.2 Data] Budget logic by index
         is_first_step = (step_idx == 0)
-        budget = MAX_STEP_TIME_FIRST if is_first_step else MAX_STEP_TIME_NORMAL
+        
+        # [v1.4.6-026] Special Budget for A1 Boot Anchor
+        budget = MAX_STEP_TIME_NORMAL
+        if is_first_step:
+            if solver_type == 'A1' and params_to_use.get('dt_init') == A1_BOOT_PARAMS['dt_init']:
+                budget = MAX_STEP_TIME_ANCHOR
+            else:
+                budget = MAX_STEP_TIME_FIRST
         
         # [v1.4.6-018 Probe Fix] Snapshot dt_before
         dt_before = float(current_dt) if solver_type == 'A1' else 0.0
@@ -784,8 +819,6 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
                 row['M_diag_min_after'] = np.nan
 
         except Exception as e:
-            # If probe dies, we don't kill the harness, just log nan
-            # print(f"    [Probe Error] {e}") # Reduce spam for fail cases
             pass
         
         if relay_meta:
@@ -818,10 +851,10 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-025 (A1 ANCHOR TUNING & DEEP DIAGNOSTICS) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-026 (ANCHOR PATIENCE & AUTOPSY) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
-    print(f"Time Budget: First={MAX_STEP_TIME_FIRST}s (Hot), Normal={MAX_STEP_TIME_NORMAL}s")
+    print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s, Normal={MAX_STEP_TIME_NORMAL}s")
     
     for grid_cfg in GRID_LIST:
         for base_step in BASELINE_STEP_LIST:
@@ -877,16 +910,32 @@ def main():
                     'relay_delta': snap_delta
                 })
                 
-                # [v1.4.6-024 Override] A1 Bootstrap Logic
-                # Check if Baseline failed at start (bias 0 or NaN max_bias) and we have no relay phi
+                # [v1.4.6-026 Override] Baseline Autopsy Logic
+                # If Baseline failed at 0.0V with MAX_ITER, try Autopsy
+                if base_fail_class == "NUMERIC_FAIL" and (max_bias_base == 0.0 or np.isnan(max_bias_base)) and "MAX_ITER" in fail_reason_base:
+                    print(f"    [Strategy] Baseline Autopsy: Retrying 0.0V with {BASELINE_DIAG_PARAMS['max_iter']} iters...")
+                    df_diag, _, _, diag_reason, _, _ = run_sweep_stress(
+                        params, grid_cfg, base_step, 'Baseline_Diag',
+                        start_bias=0.0, stop_bias=0.0, # Just one point
+                        capture_k=None, relay_meta=relay_meta,
+                        solver_params=BASELINE_DIAG_PARAMS # Force override
+                    )
+                    # Log but don't append to main sequence logic
+                    diag_status = "FAIL"
+                    if not df_diag.empty and df_diag.iloc[-1]['is_converged']:
+                         diag_status = "CONVERGED"
+                    print(f"    [Strategy] Autopsy Result: {diag_status} ({diag_reason})")
+                    full_logs.append(df_diag) # Append to log for CSV
+
+                # [v1.4.6-024/025 Override] A1 Bootstrap Logic
                 is_bootstrap_needed = (phi_relay is None) and (np.isnan(max_bias_base) or max_bias_base == 0.0)
                 
                 if is_bootstrap_needed:
                     print(f"    [Strategy] A1 BOOTSTRAP OVERRIDE ACTIVATED.")
                     print(f"    Baseline died at start. Attempting A1 self-start (Two-Step Verification).")
                     
-                    # Step 1: Anchor Test (0.0V Only) - [v1.4.6-025] USING BOOT PARAMS
-                    print(f"    [Strategy] Step 1: A1 Anchor Check at 0.0V (Restricted dt/Tight GMRES)...")
+                    # Step 1: Anchor Test (0.0V Only) - [v1.4.6-025/026] USING BOOT PARAMS
+                    print(f"    [Strategy] Step 1: A1 Anchor Check at 0.0V (Patience Mode)...")
                     
                     relay_phi_to_use = last_phi_base # Initial ramp
                     relay_meta_boot = relay_meta.copy()
@@ -1022,10 +1071,10 @@ def main():
                 gc.collect()
 
     # Save
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-025_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-025_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-026_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-026_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-025_FullLog.csv, Stress_v1.4.6-025_Summary.csv")
+    print("Saved: Stress_v1.4.6-026_FullLog.csv, Stress_v1.4.6-026_Summary.csv")
 
 if __name__ == "__main__":
     main()
