@@ -1,22 +1,20 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-034.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-034 (窄寬度 Tanh 與 A1 韌性增強)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-034 (Narrow Tanh & Relaxed A1)
-版本號 (Version): Harness v1.4.6-034
-前置版本 (Prev Version): Harness v1.4.6-033
+文件名 (Filename): BenchS_StressHarness_v1.4.6-035.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-035 (自適應偏移與寬鬆 A1)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-035 (Adaptive Offset & Relaxed A1)
+版本號 (Version): Harness v1.4.6-035
+前置版本 (Prev Version): Harness v1.4.6-034
 
 變更日誌 (Changelog):
-    1. [Physics] Narrow Width Sweep:
-       - 固定 Q_tanh_amp=1e22，掃描 Q_tanh_width: 1.0, 0.1, 0.05。
-       - 目標：通過銳化導數 (1/w) 來增強正反饋，試圖擊穿 Newton。
-    2. [Logic] A1 Force Step Relaxation:
-       - Force Step 判定改為 norm_new < norm_old (原為 merit < merit)。
-       - 增加魯棒性，允許在非凸區域存活。
-    3. [Telemetry] New Metrics:
-       - diag_tanh_med, diag_tanh_min。
-       - a1_consec_fail_max。
-    4. [Config] Baseline Diag:
-       - max_iter 提升至 200，防止誤判「慢」為「死」。
+    1. [Physics] Adaptive Offset:
+       - Tanh Trap 的中心偏移量 (tanh_off) 自動設置為 phi_bc_L (~0.418V)。
+       - 解決 v034 中因 Offset=0 導致窄寬度下 Tanh 飽和、導數歸零的問題。
+    2. [Solver] A1 Line Search Relaxation:
+       - 在 Line Search 中增加 "STEP_SIMPLE" 分支。
+       - 只要 merit_new < merit (單純下降)，即接受步長，不再強制要求顯著下降 (1e-12)。
+    3. [Telemetry] Saturation Monitor:
+       - 新增 tanh_arg_abs_max: max(|(phi - off)/w|)。
+       - 用於確認 Tanh 是否處於線性區 (arg < 2) 還是飽和區 (arg > 5)。
 """
 
 import os
@@ -74,9 +72,7 @@ GRID_LIST = [
 # [Stress Axis 2] Baseline Step Size
 BASELINE_STEP_LIST = [0.2]
 
-# [v1.4.6-034] Narrow Width Sweep
-# Amp fixed at 1e22 (mid-range from test-33)
-# Widths: 1.0 (Baseline), 0.1 (10x deriv), 0.05 (20x deriv)
+# [v1.4.6-035] Narrow Width Sweep (Retrying with Adaptive Offset)
 Q_TANH_WIDTHS = [1.0, 0.1, 0.05] 
 
 # Case Construction
@@ -91,10 +87,10 @@ for w in Q_TANH_WIDTHS:
         'N_low': 1e13, 
         'BiasMax': 12.0, 
         'Q_trap': 0.0, 
-        'Q_tanh_amp': 1.0e22, # Fixed Amp
+        'Q_tanh_amp': 1.0e22, 
         'Q_tanh_offset': 6.0, 
-        'Q_tanh_offset_anchor': 0.0, 
-        'Q_tanh_width': w,    # Variable Width
+        'Q_tanh_offset_anchor': 'ADAPTIVE', # [v1.4.6-035] Flag for Adaptive
+        'Q_tanh_width': w,    
         'Alpha': 0.00, 
         'RelayBias': 12.0, 
         'A1_Step': 0.05
@@ -112,7 +108,6 @@ BASELINE_PARAMS = {
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
-# [v1.4.6-034] Extended Max Iter for Diag
 BASELINE_DIAG_PARAMS = {
     'max_iter': 200, 'tol': 1e-4, 
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
@@ -321,7 +316,7 @@ class KounA1Solver:
         cnt_step = 0; cnt_noise = 0; cnt_sniper = 0
         cnt_consecutive_fail = 0 
         cnt_force_step = 0 
-        cnt_consec_fail_max = 0 # [v1.4.6-034] New Metric
+        cnt_consec_fail_max = 0 
         
         start_time = time.time()
         t_lin = 0.0; t_ls = 0.0; t_res = 0.0
@@ -398,8 +393,16 @@ class KounA1Solver:
                 phi_try = phi + step
                 merit_new = float(merit_loss(phi_try, bias_L, bias_R, *physics_args))
                 
-                if merit_new <= merit * (1.0 - 1e-12): status = "STEP"; phi_next = phi_try; break
-                if merit_new <= merit + 1e-6: status = "NOISE"; phi_next = phi_try; break
+                if merit_new <= merit * (1.0 - 1e-12): 
+                    status = "STEP"; phi_next = phi_try; break
+                
+                # [v1.4.6-035] Relaxed check: just simple decrease in merit
+                if merit_new < merit:
+                    status = "STEP_SIMPLE"; phi_next = phi_try; break
+                
+                if merit_new <= merit + 1e-6: 
+                    status = "NOISE"; phi_next = phi_try; break
+                
                 alpha *= 0.5
             t_ls += time.time() - t0
             
@@ -408,7 +411,7 @@ class KounA1Solver:
                 cnt_consecutive_fail = 0 
                 
                 rel_improve = (merit - merit_new) / (merit + 1e-12)
-                if status == "STEP":
+                if status == "STEP" or status == "STEP_SIMPLE":
                     cnt_step += 1
                     if rel_improve > 1e-1: factor = 1.5
                     elif rel_improve > 1e-2: factor = 1.2
@@ -438,7 +441,7 @@ class KounA1Solver:
                     res_force = internal_residual(phi_try, bias_L, bias_R, *physics_args)
                     norm_force = float(jnp.linalg.norm(res_force))
                     
-                    if norm_force < norm: # Relaxed condition
+                    if norm_force < norm: 
                         status = "FORCE_STEP"
                         phi = phi_try 
                         cnt_force_step += 1 
@@ -480,7 +483,6 @@ def setup_materials(X, Y, params):
     Q_trap_vol = params.get('Q_trap', 0.0)
     Q_trap_map = mask_vac * Q_trap_vol
     
-    # [v1.4.6-033] Tanh Trap Map (Amplitude Mask)
     Q_tanh_amp = params.get('Q_tanh_amp', 0.0)
     Q_tanh_map = mask_vac * Q_tanh_amp
     
@@ -523,15 +525,17 @@ def warmup_kernels():
             phi_full = jnp.tile(phi_row, (ny_i, 1))
             phi_init = phi_full[1:-1, 1:-1].flatten()
             
+            # [v1.4.6-035] Warmup needs valid bias_L/bias_R
+            bias_L = phi_bc_L
+            bias_R = phi_bc_R_base 
+            
             # Extract tanh params
-            tanh_off = params.get('Q_tanh_offset_anchor', 0.0)
+            # Note: For warmup, we can't use Adaptive logic since we don't have phi yet?
+            # We can just use 0.0 as dummy offset or phi_bc_L
+            tanh_off = phi_bc_L 
             tanh_w = params.get('Q_tanh_width', 1.0)
             
             physics_args = (eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx_i, ny_i)
-            
-            # [v1.4.6-033 Fix] Define bias_L and bias_R
-            bias_L = phi_bc_L
-            bias_R = phi_bc_R_base 
             
             # Warmup Residual
             res = internal_residual(phi_init, bias_L, bias_R, *physics_args)
@@ -572,13 +576,6 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     # Update unpack
     eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map = setup_materials(X, Y, params)
     
-    # Extract tanh params
-    tanh_off = params.get('Q_tanh_offset_anchor', 0.0)
-    tanh_w = params.get('Q_tanh_width', 1.0)
-    
-    # Pack new physics args
-    physics_args = (eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny)
-    
     phi_bc_L = Vt * jnp.log(params['N_high']/ni_bc)
     phi_bc_R_phys = Vt * jnp.log(params['N_low']/ni_bc)
     alpha = params.get('Alpha', 0.0)
@@ -595,6 +592,18 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             phi_full = phi_full.at[:, i].set(phi_seed_L*(1-r) + phi_seed_R*r)
         phi_init = phi_full[1:-1, 1:-1].flatten()
         
+    # [v1.4.6-035] Adaptive Offset Calculation
+    # If flagged ADAPTIVE, use phi_bc_L as offset
+    tanh_off = params.get('Q_tanh_offset_anchor', 0.0)
+    if tanh_off == 'ADAPTIVE':
+        tanh_off = float(phi_bc_L)
+        print(f" (Adaptive Offset: {tanh_off:.4f}V)", end="")
+        
+    tanh_w = params.get('Q_tanh_width', 1.0)
+    
+    # Pack new physics args
+    physics_args = (eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny)
+    
     if 'A1' in solver_type:
         params_to_use = solver_params if solver_params else A1_PARAMS
         solver = KounA1Solver(params_to_use)
@@ -706,7 +715,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'a1_noise': a1_counts.get('noise', 0),
             'a1_sniper': a1_counts.get('sniper', 0),
             'a1_force_step': a1_counts.get('force_step', 0), 
-            'a1_consec_fail_max': a1_counts.get('consec_fail_max', 0), # [v1.4.6-034] New Metric
+            'a1_consec_fail_max': a1_counts.get('consec_fail_max', 0), 
             'last_gmres_info': last_gmres, 
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
             'g_tol': g_params[0], 'g_max': g_params[1], 'g_rst': g_params[2],
@@ -739,8 +748,13 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             row['diag_term_min'] = float(jnp.min(d_free)) 
             row['diag_term_max'] = float(jnp.max(d_free))
             row['diag_tanh_max'] = float(jnp.max(d_tanh)) 
-            row['diag_tanh_min'] = float(jnp.min(d_tanh)) # [v1.4.6-034] New Metric
-            row['diag_tanh_med'] = float(jnp.median(d_tanh)) # [v1.4.6-034] New Metric
+            row['diag_tanh_min'] = float(jnp.min(d_tanh)) 
+            row['diag_tanh_med'] = float(jnp.median(d_tanh)) 
+            
+            # [v1.4.6-035] New Metric: Tanh Arg Abs Max
+            # arg = (phi - off)/w
+            tanh_arg = jnp.abs((phi_inner - tanh_off) / tanh_w)
+            row['tanh_arg_abs_max'] = float(jnp.max(tanh_arg))
             
             if 'A1' in solver_type:
                 if dt_before > 0:
@@ -784,7 +798,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-034 (NARROW TANH & RELAXED A1) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-035 (ADAPTIVE OFFSET & RELAXED A1) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s (Focus on 0.0V)")
@@ -795,7 +809,7 @@ def main():
             
             for params in SCAN_PARAMS:
                 case_id = params['CaseID']
-                print(f"  > Case: {case_id} (Width={params['Q_tanh_width']:.2f})")
+                print(f"  > Case: {case_id} (Width={params['Q_tanh_width']:.2f})", end="")
                 
                 relay_target = params['RelayBias']
                 relay_k = int(np.floor(relay_target / base_step + 1e-9))
@@ -811,7 +825,7 @@ def main():
                 }
                 
                 # Unconditional Autopsy First 
-                print(f"    [Strategy] Baseline Diag Check (0.0V, 200 iters)...")
+                print(f"\n    [Strategy] Baseline Diag Check (0.0V, 200 iters)...")
                 df_diag, last_phi_base, _, diag_reason, _, _ = run_sweep_stress(
                     params, grid_cfg, base_step, 'Baseline_Diag',
                     start_bias=0.0, stop_bias=0.0,
@@ -881,10 +895,10 @@ def main():
 
                 gc.collect()
 
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-034_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-034_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-035_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-035_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-034_FullLog.csv, Stress_v1.4.6-034_Summary.csv")
+    print("Saved: Stress_v1.4.6-035_FullLog.csv, Stress_v1.4.6-035_Summary.csv")
 
 if __name__ == "__main__":
     main()
