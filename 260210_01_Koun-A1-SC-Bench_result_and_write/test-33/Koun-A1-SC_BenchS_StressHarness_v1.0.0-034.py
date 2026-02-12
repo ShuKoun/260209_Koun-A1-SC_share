@@ -1,21 +1,22 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-033.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-033 (結構性非單調構造 - 修復版)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-033 (Structural Non-Monotonicity Trap - Fixed)
-版本號 (Version): Harness v1.4.6-033
-前置版本 (Prev Version): Harness v1.4.6-032
+文件名 (Filename): BenchS_StressHarness_v1.4.6-034.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-034 (窄寬度 Tanh 與 A1 韌性增強)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-034 (Narrow Tanh & Relaxed A1)
+版本號 (Version): Harness v1.4.6-034
+前置版本 (Prev Version): Harness v1.4.6-033
 
 變更日誌 (Changelog):
-    1. [Fix] NameError in Warmup:
-       - 修正 warmup_kernels 中缺失 bias_L/bias_R 定義的錯誤。
-       - 確保 Warmup 階段正確模擬邊界條件。
-    2. [Physics] Dynamic Trap (Tanh Model):
-       - 引入 phi-dependent trap: rho = q * Amp * tanh((phi - off)/w).
-       - 產生正的 Jacobian 對角項 (positive feedback)，對抗 Poisson 的穩定性。
-    3. [Experiment] Structural Kill Sweep:
-       - 掃描 Q_tanh_amp: 1e21, 1e22, 5e22 (尋找 Jacobian 結構崩潰點)。
-    4. [Telemetry] New Diagnostics:
-       - 記錄 diag_tanh_max (正反饋強度)。
+    1. [Physics] Narrow Width Sweep:
+       - 固定 Q_tanh_amp=1e22，掃描 Q_tanh_width: 1.0, 0.1, 0.05。
+       - 目標：通過銳化導數 (1/w) 來增強正反饋，試圖擊穿 Newton。
+    2. [Logic] A1 Force Step Relaxation:
+       - Force Step 判定改為 norm_new < norm_old (原為 merit < merit)。
+       - 增加魯棒性，允許在非凸區域存活。
+    3. [Telemetry] New Metrics:
+       - diag_tanh_med, diag_tanh_min。
+       - a1_consec_fail_max。
+    4. [Config] Baseline Diag:
+       - max_iter 提升至 200，防止誤判「慢」為「死」。
 """
 
 import os
@@ -73,16 +74,15 @@ GRID_LIST = [
 # [Stress Axis 2] Baseline Step Size
 BASELINE_STEP_LIST = [0.2]
 
-# [v1.4.6-033] Tanh Trap Sweep List
-# Challenge level: 1e21 to 5e22 to counteract Poisson diag (~5000-17000)
-Q_TANH_LEVELS = [1.0e21, 1.0e22, 5.0e22] 
+# [v1.4.6-034] Narrow Width Sweep
+# Amp fixed at 1e22 (mid-range from test-33)
+# Widths: 1.0 (Baseline), 0.1 (10x deriv), 0.05 (20x deriv)
+Q_TANH_WIDTHS = [1.0, 0.1, 0.05] 
 
 # Case Construction
 SCAN_PARAMS = []
-for qt in Q_TANH_LEVELS:
-    log_q = int(np.log10(qt))
-    tag = f"C4_Tanh1e{log_q}"
-    if abs(qt - 5e22) < 1e20: tag = f"C4_Tanh5e{log_q}"
+for w in Q_TANH_WIDTHS:
+    tag = f"C4_TanhW{w:.2f}".replace(".", "p")
     
     SCAN_PARAMS.append({
         'CaseID': tag, 
@@ -90,11 +90,11 @@ for qt in Q_TANH_LEVELS:
         'N_high': 1e17, 
         'N_low': 1e13, 
         'BiasMax': 12.0, 
-        'Q_trap': 0.0, # Base static trap off
-        'Q_tanh_amp': qt,
+        'Q_trap': 0.0, 
+        'Q_tanh_amp': 1.0e22, # Fixed Amp
         'Q_tanh_offset': 6.0, 
-        'Q_tanh_offset_anchor': 0.0, # Center at 0V for max derivative at Anchor
-        'Q_tanh_width': 1.0,
+        'Q_tanh_offset_anchor': 0.0, 
+        'Q_tanh_width': w,    # Variable Width
         'Alpha': 0.00, 
         'RelayBias': 12.0, 
         'A1_Step': 0.05
@@ -112,8 +112,9 @@ BASELINE_PARAMS = {
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
+# [v1.4.6-034] Extended Max Iter for Diag
 BASELINE_DIAG_PARAMS = {
-    'max_iter': 100, 'tol': 1e-4, 
+    'max_iter': 200, 'tol': 1e-4, 
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
@@ -157,7 +158,6 @@ def reconstruct_phi(phi_in, bias_L, bias_R, nx, ny):
     phi = phi.at[-1, :].set(phi[-2, :])
     return phi
 
-# [v1.4.6-033] Updated signature for Tanh Trap
 @partial(jit, static_argnums=(12, 13)) 
 def internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
     phi = reconstruct_phi(phi_in, bias_L, bias_R, nx, ny)
@@ -176,13 +176,8 @@ def internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map
     flux_u = harmonic_mean(e_c, e_u) * (p_c - p_u) / dy
     div_flux = (flux_r - flux_l)/dx + (flux_d - flux_u)/dy
     
-    # Free Charge
     rho_free = q * (ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) - jnp.exp(p_c/Vt)) + N_dop[1:-1, 1:-1])
-    
-    # Static Trap
     rho_static = q * Q_trap_map[1:-1, 1:-1]
-    
-    # [v1.4.6-033] Dynamic Tanh Trap
     rho_dyn = q * Q_tanh_map[1:-1, 1:-1] * jnp.tanh((p_c - tanh_off) / tanh_w)
     
     return (div_flux + rho_free + rho_static + rho_dyn).flatten()
@@ -201,7 +196,6 @@ def get_diag_precond(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map,
     diag_pois = -2.0*e_c/(dx**2) - 2.0*e_c/(dy**2)
     diag_free = -(q / Vt) * ni_map[1:-1, 1:-1] * (jnp.exp(-p_c/Vt) + jnp.exp(p_c/Vt))
     
-    # [v1.4.6-033] Tanh Trap Derivative (POSITIVE contribution)
     tanh_val = jnp.tanh((p_c - tanh_off) / tanh_w)
     diag_tanh = (q * Q_tanh_map[1:-1, 1:-1] / tanh_w) * (1.0 - tanh_val**2)
     
@@ -327,6 +321,7 @@ class KounA1Solver:
         cnt_step = 0; cnt_noise = 0; cnt_sniper = 0
         cnt_consecutive_fail = 0 
         cnt_force_step = 0 
+        cnt_consec_fail_max = 0 # [v1.4.6-034] New Metric
         
         start_time = time.time()
         t_lin = 0.0; t_ls = 0.0; t_res = 0.0
@@ -341,12 +336,12 @@ class KounA1Solver:
         norm = norm_init
         t_res += time.time() - t0
         
-        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'force_step':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
+        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'force_step':0, 'consec_fail_max':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
         captured_g_params = (self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart'])
 
         for k in range(self.params['max_outer_iter']):
             if time.time() - start_time > step_time_limit:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "TIMEOUT", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             if k > 0:
@@ -359,7 +354,7 @@ class KounA1Solver:
             
             if norm < 1e-4: 
                 rel = (norm_init - norm)/(norm_init+1e-12)
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, True, norm_init, norm, rel, k, f"CONV({cnt_step}/{cnt_noise}/{cnt_sniper})", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             t0 = time.time()
@@ -388,7 +383,7 @@ class KounA1Solver:
                 d.block_until_ready()
                 last_gmres_info = info
             except Exception as e:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "GMRES_EXCEPT", -1, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             t_lin += time.time() - t0
@@ -426,6 +421,7 @@ class KounA1Solver:
                     if self.dt < dt_floor: self.dt = dt_floor
             else:
                 cnt_consecutive_fail += 1
+                if cnt_consecutive_fail > cnt_consec_fail_max: cnt_consec_fail_max = cnt_consecutive_fail
                 
                 do_force_attempt = False
                 if cnt_consecutive_fail >= 5: 
@@ -437,28 +433,31 @@ class KounA1Solver:
                     if jnp.max(jnp.abs(step)) > 0.5: step *= (0.5 / jnp.max(jnp.abs(step)))
                     
                     phi_try = phi + step
-                    merit_force = float(merit_loss(phi_try, bias_L, bias_R, *physics_args))
                     
-                    if merit_force < merit:
+                    # [v1.4.6-034] Check Norm Decrease instead of Merit
+                    res_force = internal_residual(phi_try, bias_L, bias_R, *physics_args)
+                    norm_force = float(jnp.linalg.norm(res_force))
+                    
+                    if norm_force < norm: # Relaxed condition
                         status = "FORCE_STEP"
                         phi = phi_try 
                         cnt_force_step += 1 
                         self.dt = dt_floor 
                         cnt_consecutive_fail = 0
                     else:
-                        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                         return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
                 else:
                     self.dt *= 0.2
                     if self.dt < 1e-9: 
-                         a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                         a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                          return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             self.dt = min(self.dt, self.params['dt_max'])
             dt_min_seen = min(dt_min_seen, self.dt)
             dt_max_seen = max(dt_max_seen, self.dt)
 
-        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
         return phi, False, norm_init, norm, 0.0, k, "MAX_ITER", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
 # ============================================================================
@@ -532,7 +531,7 @@ def warmup_kernels():
             
             # [v1.4.6-033 Fix] Define bias_L and bias_R
             bias_L = phi_bc_L
-            bias_R = phi_bc_R_base # No w_bias loop here, just base for warmup
+            bias_R = phi_bc_R_base 
             
             # Warmup Residual
             res = internal_residual(phi_init, bias_L, bias_R, *physics_args)
@@ -555,7 +554,7 @@ def warmup_kernels():
             mv_a.block_until_ready()
             
             print(f" Done ({time.time()-start_case:.2f}s)")
-            break # Warmup one case is usually enough if shapes match
+            break 
     print(">>> JIT WARMUP COMPLETE.\n")
 
 def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_bias, init_phi=None, capture_k=None, relay_meta=None, a1_span=None, solver_params=None):
@@ -647,7 +646,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
              current_dt = next_dt
         else:
              phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
-             a1_counts = {'step':0,'noise':0,'sniper':0, 'force_step':0, 'dt_min':0.0, 'dt_max':0.0} 
+             a1_counts = {'step':0,'noise':0,'sniper':0, 'force_step':0, 'consec_fail_max':0, 'dt_min':0.0, 'dt_max':0.0} 
         
         dt_after = float(current_dt) if 'A1' in solver_type else 0.0
         dur = time.time() - start
@@ -707,6 +706,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'a1_noise': a1_counts.get('noise', 0),
             'a1_sniper': a1_counts.get('sniper', 0),
             'a1_force_step': a1_counts.get('force_step', 0), 
+            'a1_consec_fail_max': a1_counts.get('consec_fail_max', 0), # [v1.4.6-034] New Metric
             'last_gmres_info': last_gmres, 
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
             'g_tol': g_params[0], 'g_max': g_params[1], 'g_rst': g_params[2],
@@ -738,7 +738,9 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             row['diag_pois_max'] = float(jnp.max(d_pois))
             row['diag_term_min'] = float(jnp.min(d_free)) 
             row['diag_term_max'] = float(jnp.max(d_free))
-            row['diag_tanh_max'] = float(jnp.max(d_tanh)) # [v1.4.6-033] New
+            row['diag_tanh_max'] = float(jnp.max(d_tanh)) 
+            row['diag_tanh_min'] = float(jnp.min(d_tanh)) # [v1.4.6-034] New Metric
+            row['diag_tanh_med'] = float(jnp.median(d_tanh)) # [v1.4.6-034] New Metric
             
             if 'A1' in solver_type:
                 if dt_before > 0:
@@ -782,7 +784,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-033 (STRUCTURAL NON-MONOTONICITY TRAP - FIXED) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-034 (NARROW TANH & RELAXED A1) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s (Focus on 0.0V)")
@@ -793,7 +795,7 @@ def main():
             
             for params in SCAN_PARAMS:
                 case_id = params['CaseID']
-                print(f"  > Case: {case_id} (Q_tanh_amp={params['Q_tanh_amp']:.1e})")
+                print(f"  > Case: {case_id} (Width={params['Q_tanh_width']:.2f})")
                 
                 relay_target = params['RelayBias']
                 relay_k = int(np.floor(relay_target / base_step + 1e-9))
@@ -809,7 +811,7 @@ def main():
                 }
                 
                 # Unconditional Autopsy First 
-                print(f"    [Strategy] Baseline Diag Check (0.0V, 100 iters)...")
+                print(f"    [Strategy] Baseline Diag Check (0.0V, 200 iters)...")
                 df_diag, last_phi_base, _, diag_reason, _, _ = run_sweep_stress(
                     params, grid_cfg, base_step, 'Baseline_Diag',
                     start_bias=0.0, stop_bias=0.0,
@@ -879,10 +881,10 @@ def main():
 
                 gc.collect()
 
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-033_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-033_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-034_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-034_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-033_FullLog.csv, Stress_v1.4.6-033_Summary.csv")
+    print("Saved: Stress_v1.4.6-034_FullLog.csv, Stress_v1.4.6-034_Summary.csv")
 
 if __name__ == "__main__":
     main()
