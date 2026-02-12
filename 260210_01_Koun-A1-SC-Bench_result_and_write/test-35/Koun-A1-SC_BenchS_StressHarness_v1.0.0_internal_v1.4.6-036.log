@@ -1,0 +1,39 @@
+--- Environment Hardening Applied ---
+XLA_FLAGS: --xla_gpu_enable_command_buffer=
+MEM_FRACTION: .35
+-------------------------------------
+[12:16:18] JAX Device Check: [cuda(id=0)]
+SUCCESS: JAX is running on GPU.
+
+>>> JIT WARMUP: Compiling Isomorphic Operators for all Grids & Cases...
+  [Warmup Grid] MegaUltra2 (640x320)... Done (1.72s)
+>>> JIT WARMUP COMPLETE.
+
+=== BENCHMARK S: STRESS HARNESS v1.4.6-036 (A1 GRADIENT DESCENT FALLBACK) ===
+Grid List: ['MegaUltra2']
+Step List: [0.2]
+Time Budget: Anchor=240.0s (Focus on 0.0V)
+
+>>> Stress Group: MegaUltra2 | Step=0.2V
+  > Case: C4_TanhW1p00 (Width=1.00)
+    [Strategy] Baseline Diag Check (0.0V, 200 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Adaptive Offset: 0.4165V) (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Adaptive Offset: 0.4165V) (Anchor Only: 0.0V)
+    !!! FAILED at 0.00V (DT_COLLAPSE)
+    [Strategy] A1 Result: FAIL (DT_COLLAPSE)
+  > Case: C4_TanhW0p10 (Width=0.10)
+    [Strategy] Baseline Diag Check (0.0V, 200 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Adaptive Offset: 0.4165V) (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Adaptive Offset: 0.4165V) (Anchor Only: 0.0V)
+    !!! FAILED at 0.00V (DT_COLLAPSE)
+    [Strategy] A1 Result: FAIL (DT_COLLAPSE)
+  > Case: C4_TanhW0p05 (Width=0.05)
+    [Strategy] Baseline Diag Check (0.0V, 200 iters)...
+  > [Baseline_Diag] Grid=MegaUltra2(640x320), Step=0.2V, Range=0.00->... (Adaptive Offset: 0.4165V) (Anchor Only: 0.0V)
+    [Strategy] Baseline Diag Result: CONVERGED (NONE)
+    [Strategy] A1 Bootstrap Check (0.0V)...
+  > [A1] Grid=MegaUltra2(640x320), Step=0.05V, Range=0.00->... (Adaptive Offset: 0.4165V) (Anchor Only: 0.0V)

@@ -1,22 +1,20 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-034.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-034 (窄寬度 Tanh 與 A1 韌性增強)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-034 (Narrow Tanh & Relaxed A1)
-版本號 (Version): Harness v1.4.6-034
-前置版本 (Prev Version): Harness v1.4.6-033
+文件名 (Filename): BenchS_StressHarness_v1.4.6-036.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-036 (A1 梯度下降保底機制)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-036 (A1 Gradient Descent Fallback)
+版本號 (Version): Harness v1.4.6-036
+前置版本 (Prev Version): Harness v1.4.6-035
 
 變更日誌 (Changelog):
-    1. [Physics] Narrow Width Sweep:
-       - 固定 Q_tanh_amp=1e22，掃描 Q_tanh_width: 1.0, 0.1, 0.05。
-       - 目標：通過銳化導數 (1/w) 來增強正反饋，試圖擊穿 Newton。
-    2. [Logic] A1 Force Step Relaxation:
-       - Force Step 判定改為 norm_new < norm_old (原為 merit < merit)。
-       - 增加魯棒性，允許在非凸區域存活。
-    3. [Telemetry] New Metrics:
-       - diag_tanh_med, diag_tanh_min。
-       - a1_consec_fail_max。
-    4. [Config] Baseline Diag:
-       - max_iter 提升至 200，防止誤判「慢」為「死」。
+    1. [Solver] Gradient Fallback:
+       - 當 GMRES 方向失敗時，計算負梯度方向 d = -grad(merit)。
+       - 嘗試沿梯度方向進行小步搜索。若成功下降，標記為 STEP_GRAD 並繼續。
+       - 目的：防止因 GMRES 方向在非單調區失效導致的 DT_COLLAPSE。
+    2. [Telemetry] Fallback Metrics:
+       - 新增 a1_step_grad 計數。
+       - 記錄 grad_norm 以監控梯度大小。
+    3. [Physics] Maintain Pressure:
+       - 保持 v035 的高強度 Tanh Trap 設定 (Amp=1e22, w=1.0/0.1/0.05)。
 """
 
 import os
@@ -74,9 +72,7 @@ GRID_LIST = [
 # [Stress Axis 2] Baseline Step Size
 BASELINE_STEP_LIST = [0.2]
 
-# [v1.4.6-034] Narrow Width Sweep
-# Amp fixed at 1e22 (mid-range from test-33)
-# Widths: 1.0 (Baseline), 0.1 (10x deriv), 0.05 (20x deriv)
+# [v1.4.6-036] Keep v035 Physics
 Q_TANH_WIDTHS = [1.0, 0.1, 0.05] 
 
 # Case Construction
@@ -91,10 +87,10 @@ for w in Q_TANH_WIDTHS:
         'N_low': 1e13, 
         'BiasMax': 12.0, 
         'Q_trap': 0.0, 
-        'Q_tanh_amp': 1.0e22, # Fixed Amp
+        'Q_tanh_amp': 1.0e22, 
         'Q_tanh_offset': 6.0, 
-        'Q_tanh_offset_anchor': 0.0, 
-        'Q_tanh_width': w,    # Variable Width
+        'Q_tanh_offset_anchor': 'ADAPTIVE', 
+        'Q_tanh_width': w,    
         'Alpha': 0.00, 
         'RelayBias': 12.0, 
         'A1_Step': 0.05
@@ -112,7 +108,6 @@ BASELINE_PARAMS = {
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
 }
 
-# [v1.4.6-034] Extended Max Iter for Diag
 BASELINE_DIAG_PARAMS = {
     'max_iter': 200, 'tol': 1e-4, 
     'gmres_tol': 1e-2, 'gmres_maxiter': 80, 'gmres_restart': 20
@@ -142,7 +137,7 @@ A1_BOOT_PARAMS = {
 }
 
 # ============================================================================
-# 1. Kernels (JIT) - Tanh Trap Enabled
+# 1. Kernels (JIT)
 # ============================================================================
 @jit
 def harmonic_mean(e1, e2): return 2.0 * e1 * e2 / (e1 + e2 + 1e-300)
@@ -186,6 +181,9 @@ def internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map
 def merit_loss(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
     res = internal_residual(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny)
     return 0.5 * jnp.sum(res**2)
+
+# [v1.4.6-036] Gradient of Merit Loss (JIT compiled)
+compute_grad_merit = jit(grad(merit_loss, argnums=0), static_argnums=(12, 13))
 
 @partial(jit, static_argnums=(12, 13))
 def get_diag_precond(phi_in, bias_L, bias_R, eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny):
@@ -321,7 +319,8 @@ class KounA1Solver:
         cnt_step = 0; cnt_noise = 0; cnt_sniper = 0
         cnt_consecutive_fail = 0 
         cnt_force_step = 0 
-        cnt_consec_fail_max = 0 # [v1.4.6-034] New Metric
+        cnt_step_grad = 0 # [v1.4.6-036] Gradient Step Counter
+        cnt_consec_fail_max = 0 
         
         start_time = time.time()
         t_lin = 0.0; t_ls = 0.0; t_res = 0.0
@@ -336,12 +335,12 @@ class KounA1Solver:
         norm = norm_init
         t_res += time.time() - t0
         
-        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'force_step':0, 'consec_fail_max':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
+        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'force_step':0, 'step_grad':0, 'consec_fail_max':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
         captured_g_params = (self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart'])
 
         for k in range(self.params['max_outer_iter']):
             if time.time() - start_time > step_time_limit:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "TIMEOUT", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             if k > 0:
@@ -354,7 +353,7 @@ class KounA1Solver:
             
             if norm < 1e-4: 
                 rel = (norm_init - norm)/(norm_init+1e-12)
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, True, norm_init, norm, rel, k, f"CONV({cnt_step}/{cnt_noise}/{cnt_sniper})", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             t0 = time.time()
@@ -383,7 +382,7 @@ class KounA1Solver:
                 d.block_until_ready()
                 last_gmres_info = info
             except Exception as e:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "GMRES_EXCEPT", -1, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             t_lin += time.time() - t0
@@ -398,8 +397,15 @@ class KounA1Solver:
                 phi_try = phi + step
                 merit_new = float(merit_loss(phi_try, bias_L, bias_R, *physics_args))
                 
-                if merit_new <= merit * (1.0 - 1e-12): status = "STEP"; phi_next = phi_try; break
-                if merit_new <= merit + 1e-6: status = "NOISE"; phi_next = phi_try; break
+                if merit_new <= merit * (1.0 - 1e-12): 
+                    status = "STEP"; phi_next = phi_try; break
+                
+                if merit_new < merit:
+                    status = "STEP_SIMPLE"; phi_next = phi_try; break
+                
+                if merit_new <= merit + 1e-6: 
+                    status = "NOISE"; phi_next = phi_try; break
+                
                 alpha *= 0.5
             t_ls += time.time() - t0
             
@@ -408,7 +414,7 @@ class KounA1Solver:
                 cnt_consecutive_fail = 0 
                 
                 rel_improve = (merit - merit_new) / (merit + 1e-12)
-                if status == "STEP":
+                if status == "STEP" or status == "STEP_SIMPLE":
                     cnt_step += 1
                     if rel_improve > 1e-1: factor = 1.5
                     elif rel_improve > 1e-2: factor = 1.2
@@ -423,41 +429,70 @@ class KounA1Solver:
                 cnt_consecutive_fail += 1
                 if cnt_consecutive_fail > cnt_consec_fail_max: cnt_consec_fail_max = cnt_consecutive_fail
                 
-                do_force_attempt = False
-                if cnt_consecutive_fail >= 5: 
-                    do_force_attempt = True
-                
-                if do_force_attempt:
-                    alpha_force = 1e-4
-                    step = alpha_force * d
-                    if jnp.max(jnp.abs(step)) > 0.5: step *= (0.5 / jnp.max(jnp.abs(step)))
+                # [v1.4.6-036] Gradient Descent Fallback
+                # If Line Search failed with GMRES direction, try Gradient direction
+                grad_fallback = True
+                if grad_fallback:
+                    # Compute negative gradient: d = - grad(merit)
+                    g_vec = compute_grad_merit(phi, bias_L, bias_R, *physics_args)
+                    d_grad = -g_vec
                     
-                    phi_try = phi + step
+                    # Try a small step along gradient
+                    alpha_grad = 1e-4
+                    step_grad = alpha_grad * d_grad
+                    # Clip max step
+                    if jnp.max(jnp.abs(step_grad)) > 0.5: step_grad *= (0.5 / jnp.max(jnp.abs(step_grad)))
                     
-                    # [v1.4.6-034] Check Norm Decrease instead of Merit
-                    res_force = internal_residual(phi_try, bias_L, bias_R, *physics_args)
-                    norm_force = float(jnp.linalg.norm(res_force))
+                    phi_try_grad = phi + step_grad
+                    merit_grad = float(merit_loss(phi_try_grad, bias_L, bias_R, *physics_args))
                     
-                    if norm_force < norm: # Relaxed condition
-                        status = "FORCE_STEP"
-                        phi = phi_try 
-                        cnt_force_step += 1 
-                        self.dt = dt_floor 
+                    if merit_grad < merit:
+                        # Fallback successful!
+                        status = "STEP_GRAD"
+                        phi = phi_try_grad
+                        cnt_step_grad += 1
+                        self.dt = dt_floor # Reset DT but stay cautious
                         cnt_consecutive_fail = 0
+                        # Continue to next outer loop
+                        # Note: We skip the Force Step logic below if this succeeds
                     else:
-                        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
-                        return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
-                else:
-                    self.dt *= 0.2
-                    if self.dt < 1e-9: 
-                         a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
-                         return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
+                        grad_fallback = False # Mark as failed to fall through
+                
+                if status == "FAIL": # Both GMRES and Gradient failed
+                    do_force_attempt = False
+                    if cnt_consecutive_fail >= 5: 
+                        do_force_attempt = True
+                    
+                    if do_force_attempt:
+                        alpha_force = 1e-4
+                        step = alpha_force * d
+                        if jnp.max(jnp.abs(step)) > 0.5: step *= (0.5 / jnp.max(jnp.abs(step)))
+                        
+                        phi_try = phi + step
+                        
+                        res_force = internal_residual(phi_try, bias_L, bias_R, *physics_args)
+                        norm_force = float(jnp.linalg.norm(res_force))
+                        
+                        if norm_force < norm: 
+                            status = "FORCE_STEP"
+                            phi = phi_try 
+                            cnt_force_step += 1 
+                            self.dt = dt_floor 
+                            cnt_consecutive_fail = 0
+                        else:
+                            a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                            return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
+                    else:
+                        self.dt *= 0.2
+                        if self.dt < 1e-9: 
+                             a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                             return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             self.dt = min(self.dt, self.params['dt_max'])
             dt_min_seen = min(dt_min_seen, self.dt)
             dt_max_seen = max(dt_max_seen, self.dt)
 
-        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
         return phi, False, norm_init, norm, 0.0, k, "MAX_ITER", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
 # ============================================================================
@@ -480,7 +515,6 @@ def setup_materials(X, Y, params):
     Q_trap_vol = params.get('Q_trap', 0.0)
     Q_trap_map = mask_vac * Q_trap_vol
     
-    # [v1.4.6-033] Tanh Trap Map (Amplitude Mask)
     Q_tanh_amp = params.get('Q_tanh_amp', 0.0)
     Q_tanh_map = mask_vac * Q_tanh_amp
     
@@ -523,15 +557,15 @@ def warmup_kernels():
             phi_full = jnp.tile(phi_row, (ny_i, 1))
             phi_init = phi_full[1:-1, 1:-1].flatten()
             
+            # [v1.4.6-035] Warmup needs valid bias_L/bias_R
+            bias_L = phi_bc_L
+            bias_R = phi_bc_R_base 
+            
             # Extract tanh params
-            tanh_off = params.get('Q_tanh_offset_anchor', 0.0)
+            tanh_off = phi_bc_L 
             tanh_w = params.get('Q_tanh_width', 1.0)
             
             physics_args = (eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx_i, ny_i)
-            
-            # [v1.4.6-033 Fix] Define bias_L and bias_R
-            bias_L = phi_bc_L
-            bias_R = phi_bc_R_base 
             
             # Warmup Residual
             res = internal_residual(phi_init, bias_L, bias_R, *physics_args)
@@ -553,6 +587,10 @@ def warmup_kernels():
             mv_a = matvec_op_a1(v_dummy, phi_init, dt_inv, M_inv, bias_L, bias_R, *physics_args)
             mv_a.block_until_ready()
             
+            # [v1.4.6-036] Warmup Grad
+            g_val = compute_grad_merit(phi_init, bias_L, bias_R, *physics_args)
+            g_val.block_until_ready()
+            
             print(f" Done ({time.time()-start_case:.2f}s)")
             break 
     print(">>> JIT WARMUP COMPLETE.\n")
@@ -572,13 +610,6 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
     # Update unpack
     eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map = setup_materials(X, Y, params)
     
-    # Extract tanh params
-    tanh_off = params.get('Q_tanh_offset_anchor', 0.0)
-    tanh_w = params.get('Q_tanh_width', 1.0)
-    
-    # Pack new physics args
-    physics_args = (eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny)
-    
     phi_bc_L = Vt * jnp.log(params['N_high']/ni_bc)
     phi_bc_R_phys = Vt * jnp.log(params['N_low']/ni_bc)
     alpha = params.get('Alpha', 0.0)
@@ -595,6 +626,17 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             phi_full = phi_full.at[:, i].set(phi_seed_L*(1-r) + phi_seed_R*r)
         phi_init = phi_full[1:-1, 1:-1].flatten()
         
+    # [v1.4.6-035] Adaptive Offset Calculation
+    tanh_off = params.get('Q_tanh_offset_anchor', 0.0)
+    if tanh_off == 'ADAPTIVE':
+        tanh_off = float(phi_bc_L)
+        print(f" (Adaptive Offset: {tanh_off:.4f}V)", end="")
+        
+    tanh_w = params.get('Q_tanh_width', 1.0)
+    
+    # Pack new physics args
+    physics_args = (eps_map, N_dop, ni_map, Q_trap_map, Q_tanh_map, tanh_off, tanh_w, dx, dy, nx, ny)
+    
     if 'A1' in solver_type:
         params_to_use = solver_params if solver_params else A1_PARAMS
         solver = KounA1Solver(params_to_use)
@@ -646,7 +688,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
              current_dt = next_dt
         else:
              phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
-             a1_counts = {'step':0,'noise':0,'sniper':0, 'force_step':0, 'consec_fail_max':0, 'dt_min':0.0, 'dt_max':0.0} 
+             a1_counts = {'step':0,'noise':0,'sniper':0, 'force_step':0, 'step_grad':0, 'consec_fail_max':0, 'dt_min':0.0, 'dt_max':0.0} 
         
         dt_after = float(current_dt) if 'A1' in solver_type else 0.0
         dur = time.time() - start
@@ -706,13 +748,22 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'a1_noise': a1_counts.get('noise', 0),
             'a1_sniper': a1_counts.get('sniper', 0),
             'a1_force_step': a1_counts.get('force_step', 0), 
-            'a1_consec_fail_max': a1_counts.get('consec_fail_max', 0), # [v1.4.6-034] New Metric
+            'a1_step_grad': a1_counts.get('step_grad', 0), # [v1.4.6-036] New
+            'a1_consec_fail_max': a1_counts.get('consec_fail_max', 0), 
             'last_gmres_info': last_gmres, 
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
             'g_tol': g_params[0], 'g_max': g_params[1], 'g_rst': g_params[2],
             'step_budget': budget,
             'is_first_step': is_first_step
         }
+        
+        # [v1.4.6-036] Compute Grad Norm for logging
+        try:
+            g_vec = compute_grad_merit(last_phi, phi_bc_L, bc_R, *physics_args)
+            row['grad_norm'] = float(jnp.linalg.norm(g_vec))
+        except:
+            row['grad_norm'] = np.nan
+
         try:
             phi_re = reconstruct_phi(phi_next, phi_bc_L, bc_R, nx, ny)
             p_min = float(jnp.min(phi_re))
@@ -739,8 +790,11 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             row['diag_term_min'] = float(jnp.min(d_free)) 
             row['diag_term_max'] = float(jnp.max(d_free))
             row['diag_tanh_max'] = float(jnp.max(d_tanh)) 
-            row['diag_tanh_min'] = float(jnp.min(d_tanh)) # [v1.4.6-034] New Metric
-            row['diag_tanh_med'] = float(jnp.median(d_tanh)) # [v1.4.6-034] New Metric
+            row['diag_tanh_min'] = float(jnp.min(d_tanh)) 
+            row['diag_tanh_med'] = float(jnp.median(d_tanh)) 
+            
+            tanh_arg = jnp.abs((phi_inner - tanh_off) / tanh_w)
+            row['tanh_arg_abs_max'] = float(jnp.max(tanh_arg))
             
             if 'A1' in solver_type:
                 if dt_before > 0:
@@ -784,7 +838,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-034 (NARROW TANH & RELAXED A1) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-036 (A1 GRADIENT DESCENT FALLBACK) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s (Focus on 0.0V)")
@@ -795,7 +849,7 @@ def main():
             
             for params in SCAN_PARAMS:
                 case_id = params['CaseID']
-                print(f"  > Case: {case_id} (Width={params['Q_tanh_width']:.2f})")
+                print(f"  > Case: {case_id} (Width={params['Q_tanh_width']:.2f})", end="")
                 
                 relay_target = params['RelayBias']
                 relay_k = int(np.floor(relay_target / base_step + 1e-9))
@@ -811,7 +865,7 @@ def main():
                 }
                 
                 # Unconditional Autopsy First 
-                print(f"    [Strategy] Baseline Diag Check (0.0V, 200 iters)...")
+                print(f"\n    [Strategy] Baseline Diag Check (0.0V, 200 iters)...")
                 df_diag, last_phi_base, _, diag_reason, _, _ = run_sweep_stress(
                     params, grid_cfg, base_step, 'Baseline_Diag',
                     start_bias=0.0, stop_bias=0.0,
@@ -881,10 +935,10 @@ def main():
 
                 gc.collect()
 
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-034_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-034_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-036_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-036_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-034_FullLog.csv, Stress_v1.4.6-034_Summary.csv")
+    print("Saved: Stress_v1.4.6-036_FullLog.csv, Stress_v1.4.6-036_Summary.csv")
 
 if __name__ == "__main__":
     main()
