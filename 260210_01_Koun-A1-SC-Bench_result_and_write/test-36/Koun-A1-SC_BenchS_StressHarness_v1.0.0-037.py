@@ -1,20 +1,20 @@
 """
-文件名 (Filename): BenchS_StressHarness_v1.4.6-036.py
-中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-036 (A1 梯度下降保底機制)
-英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-036 (A1 Gradient Descent Fallback)
-版本號 (Version): Harness v1.4.6-036
-前置版本 (Prev Version): Harness v1.4.6-035
+文件名 (Filename): BenchS_StressHarness_v1.4.6-037.py
+中文標題 (Chinese Title): [Benchmark S] 壓力測試離心機 v1.4.6-037 (強化版梯度保底機制)
+英文標題 (English Title): [Benchmark S] Stress Test Harness v1.4.6-037 (Enhanced Gradient Fallback)
+版本號 (Version): Harness v1.4.6-037
+前置版本 (Prev Version): Harness v1.4.6-036
 
 變更日誌 (Changelog):
-    1. [Solver] Gradient Fallback:
-       - 當 GMRES 方向失敗時，計算負梯度方向 d = -grad(merit)。
-       - 嘗試沿梯度方向進行小步搜索。若成功下降，標記為 STEP_GRAD 並繼續。
-       - 目的：防止因 GMRES 方向在非單調區失效導致的 DT_COLLAPSE。
-    2. [Telemetry] Fallback Metrics:
-       - 新增 a1_step_grad 計數。
-       - 記錄 grad_norm 以監控梯度大小。
-    3. [Physics] Maintain Pressure:
-       - 保持 v035 的高強度 Tanh Trap 設定 (Amp=1e22, w=1.0/0.1/0.05)。
+    1. [Solver] Enhanced Fallback Logic:
+       - 引入 Normalized Gradient Backtracking: 先歸一化梯度，再做多級回溯 (1e-2 -> 1e-6)。
+       - 引入 Residual Fallback: 若梯度失敗，嘗試沿負殘差方向 (-res) 搜索。
+       - 目標：解決 v036 因梯度過大導致步長失控的問題。
+    2. [Logic] DT Collapse Prevention:
+       - 當 dt < 1e-7 時，強制觸發 Fallback 嘗試並重置 dt，防止過早自殺。
+    3. [Telemetry] New Counters:
+       - a1_step_grad: 梯度保底成功次數。
+       - a1_step_res: 殘差保底成功次數。
 """
 
 import os
@@ -72,7 +72,7 @@ GRID_LIST = [
 # [Stress Axis 2] Baseline Step Size
 BASELINE_STEP_LIST = [0.2]
 
-# [v1.4.6-036] Keep v035 Physics
+# [v1.4.6-037] Keep v035 Physics
 Q_TANH_WIDTHS = [1.0, 0.1, 0.05] 
 
 # Case Construction
@@ -319,7 +319,8 @@ class KounA1Solver:
         cnt_step = 0; cnt_noise = 0; cnt_sniper = 0
         cnt_consecutive_fail = 0 
         cnt_force_step = 0 
-        cnt_step_grad = 0 # [v1.4.6-036] Gradient Step Counter
+        cnt_step_grad = 0 
+        cnt_step_res = 0 # [v1.4.6-037] Residual Fallback Counter
         cnt_consec_fail_max = 0 
         
         start_time = time.time()
@@ -335,12 +336,12 @@ class KounA1Solver:
         norm = norm_init
         t_res += time.time() - t0
         
-        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'force_step':0, 'step_grad':0, 'consec_fail_max':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
+        a1_stats = {'step':0, 'noise':0, 'sniper':0, 'force_step':0, 'step_grad':0, 'step_res':0, 'consec_fail_max':0, 'dt_min': dt_min_seen, 'dt_max': dt_max_seen}
         captured_g_params = (self.params['gmres_tol'], self.params['gmres_maxiter'], self.params['gmres_restart'])
 
         for k in range(self.params['max_outer_iter']):
             if time.time() - start_time > step_time_limit:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'step_res':cnt_step_res, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "TIMEOUT", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             if k > 0:
@@ -353,7 +354,7 @@ class KounA1Solver:
             
             if norm < 1e-4: 
                 rel = (norm_init - norm)/(norm_init+1e-12)
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'step_res':cnt_step_res, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, True, norm_init, norm, rel, k, f"CONV({cnt_step}/{cnt_noise}/{cnt_sniper})", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             t0 = time.time()
@@ -382,7 +383,7 @@ class KounA1Solver:
                 d.block_until_ready()
                 last_gmres_info = info
             except Exception as e:
-                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'step_res':cnt_step_res, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
                 return phi, False, norm_init, norm, 0.0, k, "GMRES_EXCEPT", -1, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
             t_lin += time.time() - t0
@@ -429,70 +430,77 @@ class KounA1Solver:
                 cnt_consecutive_fail += 1
                 if cnt_consecutive_fail > cnt_consec_fail_max: cnt_consec_fail_max = cnt_consecutive_fail
                 
-                # [v1.4.6-036] Gradient Descent Fallback
-                # If Line Search failed with GMRES direction, try Gradient direction
-                grad_fallback = True
-                if grad_fallback:
-                    # Compute negative gradient: d = - grad(merit)
-                    g_vec = compute_grad_merit(phi, bias_L, bias_R, *physics_args)
-                    d_grad = -g_vec
-                    
-                    # Try a small step along gradient
-                    alpha_grad = 1e-4
-                    step_grad = alpha_grad * d_grad
-                    # Clip max step
-                    if jnp.max(jnp.abs(step_grad)) > 0.5: step_grad *= (0.5 / jnp.max(jnp.abs(step_grad)))
-                    
-                    phi_try_grad = phi + step_grad
-                    merit_grad = float(merit_loss(phi_try_grad, bias_L, bias_R, *physics_args))
-                    
-                    if merit_grad < merit:
-                        # Fallback successful!
-                        status = "STEP_GRAD"
-                        phi = phi_try_grad
-                        cnt_step_grad += 1
-                        self.dt = dt_floor # Reset DT but stay cautious
-                        cnt_consecutive_fail = 0
-                        # Continue to next outer loop
-                        # Note: We skip the Force Step logic below if this succeeds
-                    else:
-                        grad_fallback = False # Mark as failed to fall through
+                # [v1.4.6-037] Enhanced Fallback Logic
+                # Try fallback if standard search fails, OR if dt is critically small (prevent death)
+                force_fallback = (self.dt < 1e-7)
                 
-                if status == "FAIL": # Both GMRES and Gradient failed
-                    do_force_attempt = False
-                    if cnt_consecutive_fail >= 5: 
-                        do_force_attempt = True
+                if force_fallback or status == "FAIL":
+                    fallback_success = False
                     
-                    if do_force_attempt:
-                        alpha_force = 1e-4
-                        step = alpha_force * d
-                        if jnp.max(jnp.abs(step)) > 0.5: step *= (0.5 / jnp.max(jnp.abs(step)))
+                    # 1. Gradient Fallback
+                    if not fallback_success:
+                        g_vec = compute_grad_merit(phi, bias_L, bias_R, *physics_args)
+                        d_grad = -g_vec
+                        d_norm = jnp.max(jnp.abs(d_grad)) + 1e-12
+                        d_grad = d_grad / d_norm # Normalize
                         
-                        phi_try = phi + step
+                        # Backtracking
+                        alpha_fb = 1e-2
+                        for _ in range(6):
+                            step_fb = alpha_fb * d_grad
+                            # Clip max step is implicit as d_grad is normalized and alpha is small
+                            phi_try_fb = phi + step_fb
+                            
+                            # Check Norm Decrease
+                            res_fb = internal_residual(phi_try_fb, bias_L, bias_R, *physics_args)
+                            norm_fb = float(jnp.linalg.norm(res_fb))
+                            
+                            if norm_fb < norm:
+                                status = "STEP_GRAD"
+                                phi = phi_try_fb
+                                cnt_step_grad += 1
+                                self.dt = dt_floor # Reset DT
+                                cnt_consecutive_fail = 0
+                                fallback_success = True
+                                break
+                            alpha_fb *= 0.5
+                            
+                    # 2. Residual Fallback (Last Resort)
+                    if not fallback_success:
+                        d_res = -res # Simple residual direction
+                        d_norm = jnp.max(jnp.abs(d_res)) + 1e-12
+                        d_res = d_res / d_norm # Normalize
                         
-                        res_force = internal_residual(phi_try, bias_L, bias_R, *physics_args)
-                        norm_force = float(jnp.linalg.norm(res_force))
-                        
-                        if norm_force < norm: 
-                            status = "FORCE_STEP"
-                            phi = phi_try 
-                            cnt_force_step += 1 
-                            self.dt = dt_floor 
-                            cnt_consecutive_fail = 0
-                        else:
-                            a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
-                            return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
-                    else:
-                        self.dt *= 0.2
-                        if self.dt < 1e-9: 
-                             a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
-                             return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
+                        alpha_fb = 1e-2
+                        for _ in range(6):
+                            step_fb = alpha_fb * d_res
+                            phi_try_fb = phi + step_fb
+                            
+                            res_fb = internal_residual(phi_try_fb, bias_L, bias_R, *physics_args)
+                            norm_fb = float(jnp.linalg.norm(res_fb))
+                            
+                            if norm_fb < norm:
+                                status = "STEP_RES"
+                                phi = phi_try_fb
+                                cnt_step_res += 1
+                                self.dt = dt_floor # Reset DT
+                                cnt_consecutive_fail = 0
+                                fallback_success = True
+                                break
+                            alpha_fb *= 0.5
+
+                # Final Collapse Check
+                if status == "FAIL" and not force_fallback:
+                    self.dt *= 0.2
+                    if self.dt < 1e-9: 
+                         a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'step_res':cnt_step_res, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+                         return phi, False, norm_init, norm, 0.0, k, "DT_COLLAPSE", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
             
             self.dt = min(self.dt, self.params['dt_max'])
             dt_min_seen = min(dt_min_seen, self.dt)
             dt_max_seen = max(dt_max_seen, self.dt)
 
-        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
+        a1_stats.update({'step':cnt_step, 'noise':cnt_noise, 'sniper':cnt_sniper, 'force_step':cnt_force_step, 'step_grad':cnt_step_grad, 'step_res':cnt_step_res, 'consec_fail_max':cnt_consec_fail_max, 'dt_min':dt_min_seen, 'dt_max':dt_max_seen})
         return phi, False, norm_init, norm, 0.0, k, "MAX_ITER", last_gmres_info, self.dt, t_lin, t_res, t_ls, a1_stats, captured_g_params
 
 # ============================================================================
@@ -688,7 +696,7 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
              current_dt = next_dt
         else:
              phi_next, succ, norm_init, norm_final, rel, iters, extra, last_gmres, t_lin, t_res, t_ls, g_params = solver.solve_step(last_phi, phi_bc_L, bc_R, physics_args, step_time_limit=budget)
-             a1_counts = {'step':0,'noise':0,'sniper':0, 'force_step':0, 'step_grad':0, 'consec_fail_max':0, 'dt_min':0.0, 'dt_max':0.0} 
+             a1_counts = {'step':0,'noise':0,'sniper':0, 'force_step':0, 'step_grad':0, 'step_res':0, 'consec_fail_max':0, 'dt_min':0.0, 'dt_max':0.0} 
         
         dt_after = float(current_dt) if 'A1' in solver_type else 0.0
         dur = time.time() - start
@@ -748,7 +756,8 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'a1_noise': a1_counts.get('noise', 0),
             'a1_sniper': a1_counts.get('sniper', 0),
             'a1_force_step': a1_counts.get('force_step', 0), 
-            'a1_step_grad': a1_counts.get('step_grad', 0), # [v1.4.6-036] New
+            'a1_step_grad': a1_counts.get('step_grad', 0), 
+            'a1_step_res': a1_counts.get('step_res', 0), 
             'a1_consec_fail_max': a1_counts.get('consec_fail_max', 0), 
             'last_gmres_info': last_gmres, 
             't_lin': t_lin, 't_res': t_res, 't_ls': t_ls,
@@ -757,7 +766,6 @@ def run_sweep_stress(params, grid_cfg, base_step, solver_type, start_bias, stop_
             'is_first_step': is_first_step
         }
         
-        # [v1.4.6-036] Compute Grad Norm for logging
         try:
             g_vec = compute_grad_merit(last_phi, phi_bc_L, bc_R, *physics_args)
             row['grad_norm'] = float(jnp.linalg.norm(g_vec))
@@ -838,7 +846,7 @@ def main():
     full_logs = []
     summary_logs = []
     
-    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-036 (A1 GRADIENT DESCENT FALLBACK) ===")
+    print("=== BENCHMARK S: STRESS HARNESS v1.4.6-037 (ENHANCED GRADIENT FALLBACK) ===")
     print(f"Grid List: {[g['Tag'] for g in GRID_LIST]}")
     print(f"Step List: {BASELINE_STEP_LIST}")
     print(f"Time Budget: Anchor={MAX_STEP_TIME_ANCHOR}s (Focus on 0.0V)")
@@ -935,10 +943,10 @@ def main():
 
                 gc.collect()
 
-    pd.concat(full_logs).to_csv("Stress_v1.4.6-036_FullLog.csv", index=False)
-    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-036_Summary.csv", index=False)
+    pd.concat(full_logs).to_csv("Stress_v1.4.6-037_FullLog.csv", index=False)
+    pd.DataFrame(summary_logs).to_csv("Stress_v1.4.6-037_Summary.csv", index=False)
     print("\n=== STRESS TEST COMPLETE ===")
-    print("Saved: Stress_v1.4.6-036_FullLog.csv, Stress_v1.4.6-036_Summary.csv")
+    print("Saved: Stress_v1.4.6-037_FullLog.csv, Stress_v1.4.6-037_Summary.csv")
 
 if __name__ == "__main__":
     main()
